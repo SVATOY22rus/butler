@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-header">
+    <h1>Правила firewall</h1>
+    <p>Ниже показан сгенерированный nftables-конфиг на основе текущей базы.</p>
+</section>
+
+<section class="card">
+    <div class="form-actions">
+        <form method="post" action="{{ url_for('main.export_firewall') }}">
+            <button type="submit">Сохранить в файл</button>
+        </form>
+    </div>
+
+    <pre class="code-block">{{ rules }}</pre>
+</section>
+{% endblock %}

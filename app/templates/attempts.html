@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+{% block title %}Попытки — Дворецкий{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>Попытки подключений</h2>
+    <p>Пока здесь тестовые записи. Позже мы подключим реальные логи и автоматический импорт событий.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>IP</th>
+                <th>Сервис</th>
+                <th>Порт</th>
+                <th>Попыток</th>
+                <th>Статус</th>
+                <th>Заметка</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in attempts %}
+            <tr>
+                <td>{{ item.ip_address }}</td>
+                <td>{{ item.service_name }}</td>
+                <td>{{ item.port }}</td>
+                <td>{{ item.attempts_count }}</td>
+                <td>{{ item.status }}</td>
+                <td>{{ item.note }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

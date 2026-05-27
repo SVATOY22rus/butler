@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Главная — Дворецкий{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>Что это за страница</h2>
+    <p>
+        Это главная страница проекта "Дворецкий". Здесь мы видим краткую сводку по системе.
+        Пока это первый каркас проекта, но уже отсюда можно переходить в разделы.
+    </p>
+</section>
+
+<section class="stats-grid">
+    <article class="stat-card">
+        <h3>Сервисов</h3>
+        <p class="stat-number">{{ stats.services }}</p>
+    </article>
+    <article class="stat-card">
+        <h3>Попыток</h3>
+        <p class="stat-number">{{ stats.attempts }}</p>
+    </article>
+    <article class="stat-card">
+        <h3>В белом списке</h3>
+        <p class="stat-number">{{ stats.whitelist }}</p>
+    </article>
+    <article class="stat-card">
+        <h3>В чёрном списке</h3>
+        <p class="stat-number">{{ stats.blacklist }}</p>
+    </article>
+</section>
+{% endblock %}

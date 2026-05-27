@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% block title %}Белый список — Дворецкий{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>Белый список</h2>
+    <p>Сюда мы добавляем адреса, которым хотим разрешить доступ.</p>
+    <form method="post" class="form-grid">
+        <label>
+            IP-адрес
+            <input type="text" name="ip_address" placeholder="1.2.3.4" required>
+        </label>
+        <label>
+            Владелец
+            <input type="text" name="owner_name" placeholder="Например клиент Иванов">
+        </label>
+        <label class="full-width">
+            Комментарий
+            <input type="text" name="comment" placeholder="Что это за адрес и зачем он нужен">
+        </label>
+        <button type="submit">Добавить в белый список</button>
+    </form>
+</section>
+
+<section class="panel">
+    <h2>Разрешённые адреса</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>IP</th>
+                <th>Владелец</th>
+                <th>Комментарий</th>
+                <th>Дата</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in entries %}
+            <tr>
+                <td>{{ item.id }}</td>
+                <td>{{ item.ip_address }}</td>
+                <td>{{ item.owner_name }}</td>
+                <td>{{ item.comment }}</td>
+                <td>{{ item.created_at }}</td>
+                <td class="actions-cell">
+                    <a class="secondary-button" href="{{ url_for('main.edit_whitelist_entry', entry_id=item.id) }}">
+                        Редактировать
+                    </a>
+
+                    <form method="post" action="{{ url_for('main.delete_whitelist_entry', entry_id=item.id) }}">
+                        <button type="submit" class="danger-button">Удалить</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

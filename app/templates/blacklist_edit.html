@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="page-header">
+    <h1>Редактирование записи чёрного списка</h1>
+    <p>Исправьте IP-адрес, причину или комментарий.</p>
+</section>
+
+<section class="card">
+    <form method="post" class="data-form">
+        <label>
+            IP-адрес
+            <input type="text" name="ip_address" value="{{ entry.ip_address }}" required>
+        </label>
+
+        <label>
+            Причина
+            <input type="text" name="reason" value="{{ entry.reason }}">
+        </label>
+
+        <label>
+            Комментарий
+            <textarea name="comment" rows="4">{{ entry.comment }}</textarea>
+        </label>
+
+        <div class="form-actions">
+            <button type="submit">Сохранить</button>
+            <a class="secondary-button" href="{{ url_for('main.blacklist') }}">Отмена</a>
+        </div>
+    </form>
+</section>
+{% endblock %}

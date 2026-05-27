@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Журнал — Дворецкий{% endblock %}
+{% block content %}
+<section class="panel">
+    <h2>Журнал действий</h2>
+    <p>Здесь видно, какие действия выполнялись в панели.</p>
+    <table>
+        <thead>
+            <tr>
+                <th>Дата</th>
+                <th>Действие</th>
+                <th>Тип</th>
+                <th>Значение</th>
+                <th>Комментарий</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in entries %}
+            <tr>
+                <td>{{ item.created_at }}</td>
+                <td>{{ item.action }}</td>
+                <td>{{ item.target_type }}</td>
+                <td>{{ item.target_value }}</td>
+                <td>{{ item.comment }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}
