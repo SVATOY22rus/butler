@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 import click
-from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from .auth import check_auth, login_required
 from .db import get_db
 
@@ -102,69 +102,180 @@ def ensure_firewall_dirs():
     return generated_dir, backups_dir
 
 
-def backup_current_ruleset():
-    _, backups_dir = ensure_firewall_dirs()
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    backup_file = backups_dir / f'nft-backup-{timestamp}.nft'
-
-    result = subprocess.run(
-        ['sudo', 'nft', 'list', 'ruleset'],
-        capture_output=True,
-        text=True
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or 'Не удалось получить текущий ruleset.')
-
-    backup_content = 'flush ruleset\n' + result.stdout
-    backup_file.write_text(backup_content, encoding='utf-8')
-
-    return backup_file
-
-def apply_generated_rules():
-    generated_dir, _ = ensure_firewall_dirs()
-    rules_file = generated_dir / 'butler.nft'
-
-    if not rules_file.exists():
-        raise RuntimeError('Файл generated/butler.nft не найден. Сначала сгенерируйте правила.')
-
-    backup_file = backup_current_ruleset()
-
-    check_result = subprocess.run(
-        ['sudo', 'nft', '-c', '-f', str(rules_file)],
-        capture_output=True,
-        text=True
-    )
-
-    if check_result.returncode != 0:
-        raise RuntimeError(
-            'Проверка nft-конфига не прошла:\n' + (check_result.stderr.strip() or check_result.stdout.strip())
-        )
-
-    apply_result = subprocess.run(
-        ['sudo', 'nft', '-f', str(rules_file)],
-        capture_output=True,
-        text=True
-    )
-
-    if apply_result.returncode != 0:
-        raise RuntimeError(
-            'Не удалось применить правила:\n' + (apply_result.stderr.strip() or apply_result.stdout.strip())
-        )
-
-    return backup_file, rules_file
-
-
 @bp.cli.command('firewall-apply')
 def firewall_apply_command():
-    """Проверить и применить generated/butler.nft."""
+    """Сгенерировать, проверить и применить Butler через основной nftables.conf."""
     try:
-        backup_file, rules_file = apply_generated_rules()
-        click.echo(f'Правила успешно применены: {rules_file}')
-        click.echo(f'Backup сохранён в: {backup_file}')
+        generated_file, target_file, backup_file = apply_firewall_rules()
+        click.echo(f'Правила успешно применены: {generated_file}')
+        click.echo(f'Target обновлён: {target_file}')
+        if backup_file:
+            click.echo(f'Backup сохранён в: {backup_file}')
     except Exception as exc:
         raise click.ClickException(str(exc))
 
+
+def get_firewall_paths():
+    generated_dir = Path('generated')
+    generated_dir.mkdir(exist_ok=True)
+
+    generated_file = generated_dir / 'butler.nft'
+    target_file = Path(current_app.config.get('BUTLER_FIREWALL_TARGET', '/etc/nftables.d/butler.nft'))
+    nftables_conf = Path(current_app.config.get('BUTLER_NFTABLES_CONF', '/etc/nftables.conf'))
+
+    return generated_dir, generated_file, target_file, nftables_conf
+
+
+def write_generated_rules_file():
+    _, generated_file, _, _ = get_firewall_paths()
+    rules = build_nft_rules()
+    generated_file.write_text(rules, encoding='utf-8')
+    return generated_file
+
+
+def run_command(command, error_prefix, timeout=10):
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f'{error_prefix}\nКоманда превысила timeout ({timeout}s).')
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f'{error_prefix}\n' + (result.stderr.strip() or result.stdout.strip())
+        )
+
+    return result
+
+
+def backup_existing_target_file(target_file):
+    backup_dir = Path('generated/backups')
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backup_file = backup_dir / f'butler-target-backup-{timestamp}.nft'
+
+    exists_result = subprocess.run(
+        ['sudo', '-n', 'test', '-f', str(target_file)],
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+    if exists_result.returncode != 0:
+        return None
+
+    read_result = run_command(
+        ['sudo', '-n', 'cat', str(target_file)],
+        'Не удалось прочитать target-файл для backup:'
+    )
+    backup_file.write_text(read_result.stdout, encoding='utf-8')
+    return backup_file
+
+
+def apply_firewall_rules():
+    _, generated_file, target_file, nftables_conf = get_firewall_paths()
+
+    write_generated_rules_file()
+    backup_file = backup_existing_target_file(target_file)
+
+    run_command(
+        ['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
+        'Не удалось создать каталог для target-файла:'
+    )
+
+    run_command(
+        ['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
+        'Не удалось установить target-файл:'
+    )
+
+    run_command(
+        ['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
+        'Проверка nftables-конфига не прошла:'
+    )
+
+    run_command(
+        ['sudo', '-n', 'nft', '-f', str(nftables_conf)],
+        'Не удалось применить правила:'
+    )
+
+    return generated_file, target_file, backup_file
+
+
+def build_empty_butler_rules():
+    return """table inet butler {
+    set web_ports {
+        type inet_service
+        elements = { }
+    }
+
+    set web_whitelist_v4 {
+        type ipv4_addr
+        elements = { }
+    }
+
+    set web_blacklist_v4 {
+        type ipv4_addr
+        elements = { }
+    }
+
+    chain input {
+        type filter hook input priority filter; policy accept;
+
+        iif lo accept
+        ct state established,related accept
+
+        # Butler reset state: no managed ports
+    }
+}
+"""
+
+
+def reset_firewall_rules():
+    _, generated_file, target_file, nftables_conf = get_firewall_paths()
+
+    backup_file = backup_existing_target_file(target_file)
+
+    empty_rules = build_empty_butler_rules()
+    generated_file.write_text(empty_rules, encoding='utf-8')
+
+    run_command(
+        ['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
+        'Не удалось создать каталог для target-файла:'
+    )
+
+    run_command(
+        ['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
+        'Не удалось установить reset target-файл:'
+    )
+
+    run_command(
+        ['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
+        'Проверка reset-конфига не прошла:'
+    )
+
+    run_command(
+        ['sudo', '-n', 'nft', '-f', str(nftables_conf)],
+        'Не удалось сбросить Butler-правила:'
+    )
+
+    return target_file, backup_file
+
+
+@bp.cli.command('firewall-reset')
+def firewall_reset_command():
+    """Сбросить Butler через основной nftables.conf."""
+    try:
+        target_file, backup_file = reset_firewall_rules()
+        click.echo(f'Butler-правила сброшены: {target_file}')
+        if backup_file:
+            click.echo(f'Backup сохранён в: {backup_file}')
+    except Exception as exc:
+        raise click.ClickException(str(exc))
+    
 
 @bp.route('/')
 @login_required
@@ -568,6 +679,51 @@ def export_firewall():
     flash(f'Файл правил сохранён: {output_file}', 'success')
     return redirect(url_for('main.firewall'))
 
+
+@bp.route('/firewall/apply', methods=['POST'])
+@login_required
+def firewall_apply():
+    try:
+        generated_file, target_file, backup_file = apply_firewall_rules()
+
+        if backup_file:
+            flash(
+                f'Правила применены. Generated: {generated_file}. Target: {target_file}. Backup: {backup_file}',
+                'success'
+            )
+        else:
+            flash(
+                f'Правила применены. Generated: {generated_file}. Target: {target_file}',
+                'success'
+            )
+    except Exception as exc:
+        flash(str(exc), 'error')
+
+    return redirect(url_for('main.firewall'))
+
+
+@bp.route('/firewall/reset', methods=['POST'])
+@login_required
+def firewall_reset():
+    try:
+        target_file, backup_file = reset_firewall_rules()
+
+        if backup_file:
+            flash(
+                f'Butler-правила сброшены. Target: {target_file}. Backup: {backup_file}',
+                'success'
+            )
+        else:
+            flash(
+                f'Butler-правила сброшены. Target: {target_file}',
+                'success'
+            )
+    except Exception as exc:
+        flash(str(exc), 'error')
+
+    return redirect(url_for('main.firewall'))
+
+
 @bp.route('/login', methods=['GET', 'POST'])
 def login():
     if session.get('authenticated'):
@@ -594,3 +750,5 @@ def logout():
     session.clear()
     flash('Вы вышли из системы.', 'success')
     return redirect(url_for('main.login'))
+
+

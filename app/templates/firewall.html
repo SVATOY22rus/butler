@@ -7,9 +7,17 @@
 </section>
 
 <section class="card">
-    <div class="form-actions">
+    <div class="form-actions firewall-actions">
         <form method="post" action="{{ url_for('main.export_firewall') }}">
             <button type="submit">Сохранить в файл</button>
+        </form>
+
+        <form method="post" action="{{ url_for('main.firewall_apply') }}">
+            <button type="submit">Применить правила</button>
+        </form>
+
+        <form method="post" action="{{ url_for('main.firewall_reset') }}">
+            <button type="submit" class="button-danger">Сбросить правила</button>
         </form>
     </div>
 

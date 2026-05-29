@@ -18,6 +18,8 @@ def create_app():
         BUTLER_PORT=int(os.environ.get('BUTLER_PORT', '5000')),
         BUTLER_ADMIN_USER=os.environ.get('BUTLER_ADMIN_USER', 'admin'),
         BUTLER_ADMIN_PASS=os.environ.get('BUTLER_ADMIN_PASS', 'change-me-now'),
+        BUTLER_FIREWALL_TARGET=os.environ.get('BUTLER_FIREWALL_TARGET', '/etc/nftables.d/butler.nft'),
+        BUTLER_NFTABLES_CONF=os.environ.get('BUTLER_NFTABLES_CONF', '/etc/nftables.conf'),
     )
 
     os.makedirs(app.instance_path, exist_ok=True)

@@ -226,3 +226,18 @@ th {
     color: #991b1b;
     border: 1px solid #fecaca;
 }
+.firewall-actions {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.button-danger {
+    background: #b91c1c;
+    color: #fff;
+}
+
+.button-danger:hover {
+    background: #991b1b;
+}
