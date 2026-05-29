@@ -196,3 +196,33 @@ th {
     line-height: 1.5;
     white-space: pre-wrap;
 }
+.auth-card {
+    max-width: 420px;
+    margin: 40px auto;
+    padding: 24px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+}
+
+.flash-list {
+    margin-bottom: 20px;
+}
+
+.flash {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+
+.flash-success {
+    background: #ecfdf3;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+.flash-error {
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}

@@ -13,6 +13,8 @@
                 <h1 class="logo">Дворецкий</h1>
                 <p class="tagline">Панель управления доступом к сервисам</p>
             </div>
+
+            {% if session.get('authenticated') %}
             <nav class="nav">
                 <a href="{{ url_for('main.index') }}">Главная</a>
                 <a href="{{ url_for('main.services') }}">Сервисы</a>
@@ -22,6 +24,11 @@
                 <a href="{{ url_for('main.audit_log') }}">Журнал</a>
                 <a href="{{ url_for('main.firewall') }}">Firewall</a>
             </nav>
+
+            <form method="post" action="{{ url_for('main.logout') }}">
+                <button type="submit">Выйти</button>
+            </form>
+            {% endif %}
         </div>
     </header>
 
@@ -30,9 +37,7 @@
             {% if messages %}
                 <div class="flash-list">
                     {% for category, message in messages %}
-                        <div class="flash flash-{{ category }}">
-                            {{ message }}
-                        </div>
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
                     {% endfor %}
                 </div>
             {% endif %}

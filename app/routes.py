@@ -5,8 +5,8 @@ from datetime import datetime
 from pathlib import Path
 
 import click
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
-
+from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from .auth import check_auth, login_required
 from .db import get_db
 
 bp = Blueprint('main', __name__)
@@ -167,6 +167,7 @@ def firewall_apply_command():
 
 
 @bp.route('/')
+@login_required
 def index():
     db = get_db()
     stats = {
@@ -179,6 +180,7 @@ def index():
 
 
 @bp.route('/services', methods=['GET', 'POST'])
+@login_required
 def services():
     db = get_db()
 
@@ -234,6 +236,7 @@ def services():
 
 
 @bp.route('/services/<int:service_id>/delete', methods=['POST'])
+@login_required
 def delete_service(service_id):
     db = get_db()
 
@@ -258,6 +261,7 @@ def delete_service(service_id):
 
 
 @bp.route('/attempts')
+@login_required
 def attempts():
     db = get_db()
     rows = db.execute('SELECT * FROM attempts ORDER BY last_seen DESC, id DESC').fetchall()
@@ -265,6 +269,7 @@ def attempts():
 
 
 @bp.route('/whitelist', methods=['GET', 'POST'])
+@login_required
 def whitelist():
     db = get_db()
 
@@ -317,6 +322,7 @@ def whitelist():
 
 
 @bp.route('/whitelist/<int:entry_id>/delete', methods=['POST'])
+@login_required
 def delete_whitelist_entry(entry_id):
     db = get_db()
 
@@ -344,6 +350,7 @@ def delete_whitelist_entry(entry_id):
 
 
 @bp.route('/whitelist/<int:entry_id>/edit', methods=['GET', 'POST'])
+@login_required
 def edit_whitelist_entry(entry_id):
     db = get_db()
 
@@ -411,6 +418,7 @@ def edit_whitelist_entry(entry_id):
 
 
 @bp.route('/blacklist', methods=['GET', 'POST'])
+@login_required
 def blacklist():
     db = get_db()
     if request.method == 'POST':
@@ -437,6 +445,7 @@ def blacklist():
 
 
 @bp.route('/blacklist/<int:entry_id>/delete', methods=['POST'])
+@login_required
 def delete_blacklist_entry(entry_id):
     db = get_db()
 
@@ -464,6 +473,7 @@ def delete_blacklist_entry(entry_id):
 
 
 @bp.route('/blacklist/<int:entry_id>/edit', methods=['GET', 'POST'])
+@login_required
 def edit_blacklist_entry(entry_id):
     db = get_db()
 
@@ -531,6 +541,7 @@ def edit_blacklist_entry(entry_id):
 
 
 @bp.route('/audit-log')
+@login_required
 def audit_log():
     db = get_db()
     rows = db.execute('SELECT * FROM audit_log ORDER BY created_at DESC, id DESC').fetchall()
@@ -538,11 +549,13 @@ def audit_log():
 
 
 @bp.route('/firewall')
+@login_required
 def firewall():
     rules = build_nft_rules()
     return render_template('firewall.html', rules=rules)
 
 @bp.route('/firewall/export', methods=['POST'])
+@login_required
 def export_firewall():
     rules = build_nft_rules()
 
@@ -555,3 +568,29 @@ def export_firewall():
     flash(f'Файл правил сохранён: {output_file}', 'success')
     return redirect(url_for('main.firewall'))
 
+@bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if session.get('authenticated'):
+        return redirect(url_for('main.index'))
+
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+
+        if check_auth(username, password):
+            session.clear()
+            session['authenticated'] = True
+            session['username'] = username
+            flash('Вы успешно вошли в систему.', 'success')
+            return redirect(url_for('main.index'))
+
+        flash('Неверный логин или пароль.', 'error')
+
+    return render_template('login.html')
+
+
+@bp.route('/logout', methods=['POST'])
+def logout():
+    session.clear()
+    flash('Вы вышли из системы.', 'success')
+    return redirect(url_for('main.login'))

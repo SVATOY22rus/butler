@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<section class="auth-card">
+    <h2>Вход в Дворецкий</h2>
+    <p>Введите логин и пароль администратора.</p>
+
+    <form method="post" class="form-grid">
+        <div class="form-row">
+            <label for="username">Логин</label>
+            <input id="username" name="username" type="text" required autofocus>
+        </div>
+
+        <div class="form-row">
+            <label for="password">Пароль</label>
+            <input id="password" name="password" type="password" required>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit">Войти</button>
+        </div>
+    </form>
+</section>
+{% endblock %}
