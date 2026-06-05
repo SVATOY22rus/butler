@@ -171,6 +171,7 @@ tar -czf "$OUTPUT_PATH" \
   --exclude="${BASE_NAME}/app/__pycache__" \
   --exclude="${BASE_NAME}/.env" \
   --exclude="${BASE_NAME}/*.pyc" \
+  --exclude="${BASE_NAME}/.mypy_cache" \
   --exclude="${BASE_NAME}/butler-deploy-*.tar.gz" \
   "$BASE_NAME"
 
