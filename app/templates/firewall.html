@@ -1,22 +1,67 @@
 {% extends 'base.html' %}
-
+{% block title %}Firewall — Дворецкий{% endblock %}
 {% block content %}
-<section class="page-header">
-    <h1>Правила firewall</h1>
-    <p>Ниже показан сгенерированный nftables-конфиг на основе текущей базы.</p>
+
+<section class="panel">
+    <h2>Режим работы</h2>
+    <p>
+        Определяет, какой список используется при генерации правил nftables.
+        Второй список при этом <strong>игнорируется</strong> полностью.
+    </p>
+
+    <div class="mode-switcher">
+        <form method="post" action="{{ url_for('main.set_firewall_mode') }}">
+            <input type="hidden" name="mode" value="whitelist">
+            <button type="submit"
+                    class="{% if mode == 'whitelist' %}mode-active{% else %}mode-inactive{% endif %}">
+                Только белый список
+            </button>
+        </form>
+        <form method="post" action="{{ url_for('main.set_firewall_mode') }}">
+            <input type="hidden" name="mode" value="blacklist">
+            <button type="submit"
+                    class="{% if mode == 'blacklist' %}mode-active{% else %}mode-inactive{% endif %}">
+                Только чёрный список
+            </button>
+        </form>
+    </div>
+
+    <p class="mode-hint">
+        {% if mode == 'whitelist' %}
+            <strong>Активен: белый список.</strong>
+            Доступ только у IP из белого списка. Все остальные — drop.
+        {% else %}
+            <strong>Активен: чёрный список.</strong>
+            Заблокированы только IP из чёрного списка. Все остальные — accept.
+        {% endif %}
+    </p>
 </section>
 
-<section class="card">
-    <div class="form-actions firewall-actions">
+<section class="panel">
+    <h2>Сгенерированные правила</h2>
+    <p>Предпросмотр nftables-конфига на основе текущей базы и режима. Применяется только вручную.</p>
+
+    {% if skipped %}
+    <div class="flash flash-error" style="margin-bottom:12px;">
+        Следующие IPv6-адреса не включены в правила (набор поддерживает только IPv4):
+        <code>{{ skipped | join(', ') }}</code>
+    </div>
+    {% endif %}
+
+    <div class="firewall-actions">
         <form method="post" action="{{ url_for('main.export_firewall') }}">
             <button type="submit">Сохранить в файл</button>
         </form>
 
-        <form method="post" action="{{ url_for('main.firewall_apply') }}">
-            <button type="submit">Применить правила</button>
+        <form method="post" action="{{ url_for('main.firewall_apply') }}"
+              onsubmit="return confirm('Применить правила к nftables прямо сейчас?')">
+            <input type="hidden" name="confirm_apply" value="yes">
+            <button type="submit" class="button-warning">Применить правила</button>
         </form>
 
-        <form method="post" action="{{ url_for('main.firewall_reset') }}">
+        <form method="post" action="{{ url_for('main.firewall_reset') }}"
+              onsubmit="return confirm('Сбросить все Butler-правила? Это откроет доступ ко всем портам!')">
+            <input type="hidden" name="confirm_reset" value="yes">
             <button type="submit" class="button-danger">Сбросить правила</button>
         </form>
     </div>

@@ -3,6 +3,11 @@ from flask import current_app, g
 
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS services (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -73,6 +78,23 @@ def init_db():
     db.commit()
 
 
+def get_setting(key, default=None):
+    db = get_db()
+    row = db.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+    if row is None:
+        return default
+    return row['value']
+
+
+def set_setting(key, value):
+    db = get_db()
+    db.execute(
+        'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        (key, value)
+    )
+    db.commit()
+
+
 def seed_demo_data():
     db = get_db()
 
@@ -111,6 +133,11 @@ def seed_demo_data():
             'INSERT INTO blacklist_entries (ip_address, reason, comment) VALUES (?, ?, ?)',
             ('11.11.11.11', 'Ручная блокировка', 'Тестовая запись в черном списке')
         )
+
+    # Режим работы по умолчанию: whitelist
+    mode_exists = db.execute("SELECT COUNT(*) AS count FROM settings WHERE key = 'firewall_mode'").fetchone()['count']
+    if mode_exists == 0:
+        db.execute("INSERT INTO settings (key, value) VALUES ('firewall_mode', 'whitelist')")
 
     db.commit()
 

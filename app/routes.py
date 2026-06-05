@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from .auth import check_auth, login_required
-from .db import get_db
+from .db import get_db, get_setting, set_setting
 
 bp = Blueprint('main', __name__)
 
@@ -19,46 +19,74 @@ def validate_ip_address(value):
         return None
 
 
+def _collect_ipv4(rows):
+    """Вернуть список IPv4-адресов из строк БД. IPv6 пропускать явно."""
+    result_v4 = []
+    skipped_v6 = []
+    for row in rows:
+        try:
+            ip_obj = ipaddress.ip_address(row['ip_address'])
+            if ip_obj.version == 4:
+                result_v4.append(str(ip_obj))
+            else:
+                skipped_v6.append(str(ip_obj))
+        except ValueError:
+            continue
+    return result_v4, skipped_v6
+
+
 def build_nft_rules():
     db = get_db()
+    mode = get_setting('firewall_mode', 'whitelist')  # 'whitelist' | 'blacklist'
 
-    services = db.execute(
-        'SELECT port FROM services ORDER BY port'
-    ).fetchall()
-
+    services = db.execute('SELECT port FROM services ORDER BY port').fetchall()
     whitelist_rows = db.execute(
         'SELECT ip_address FROM whitelist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
-
     blacklist_rows = db.execute(
         'SELECT ip_address FROM blacklist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
 
     ports = [str(row['port']) for row in services]
-    whitelist_v4 = []
-    blacklist_v4 = []
+    whitelist_v4, wl_skipped = _collect_ipv4(whitelist_rows)
+    blacklist_v4, bl_skipped = _collect_ipv4(blacklist_rows)
 
-    for row in whitelist_rows:
-        try:
-            ip_obj = ipaddress.ip_address(row['ip_address'])
-            if ip_obj.version == 4:
-                whitelist_v4.append(str(ip_obj))
-        except ValueError:
-            continue
-
-    for row in blacklist_rows:
-        try:
-            ip_obj = ipaddress.ip_address(row['ip_address'])
-            if ip_obj.version == 4:
-                blacklist_v4.append(str(ip_obj))
-        except ValueError:
-            continue
-
-    ports_text = ', '.join(ports) if ports else ''
+    ports_text     = ', '.join(ports)        if ports        else ''
     whitelist_text = ', '.join(whitelist_v4) if whitelist_v4 else ''
     blacklist_text = ', '.join(blacklist_v4) if blacklist_v4 else ''
 
-    rules = f"""table inet butler {{
+    skipped_comment = ''
+    all_skipped = wl_skipped + bl_skipped
+    if all_skipped:
+        skipped_comment = '    # IPv6 (не поддерживается в этом наборе): ' + ', '.join(all_skipped) + '\n'
+
+    if mode == 'whitelist':
+        # Разрешены только адреса из whitelist; blacklist игнорируется
+        chain_rules = f"""\
+        iif lo accept
+        ct state established,related accept
+
+        # Режим: только белый список
+        # SSH не трогаем
+        tcp dport 22 accept
+
+        ip saddr @web_whitelist_v4 tcp dport @web_ports accept
+        tcp dport @web_ports drop"""
+    else:
+        # Режим blacklist: все проходят, кроме заблокированных; whitelist игнорируется
+        chain_rules = f"""\
+        iif lo accept
+        ct state established,related accept
+
+        # Режим: только чёрный список
+        # SSH не трогаем
+        tcp dport 22 accept
+
+        ip saddr @web_blacklist_v4 tcp dport @web_ports drop
+        tcp dport @web_ports accept"""
+
+    rules = f"""# Режим Butler: {mode}
+{skipped_comment}table inet butler {{
     set web_ports {{
         type inet_service
         elements = {{ {ports_text} }}
@@ -76,20 +104,11 @@ def build_nft_rules():
 
     chain input {{
         type filter hook input priority filter; policy accept;
-
-        iif lo accept
-        ct state established,related accept
-
-        # SSH пока не трогаем панелью
-        tcp dport 22 accept
-
-        ip saddr @web_blacklist_v4 tcp dport @web_ports drop
-        ip saddr @web_whitelist_v4 tcp dport @web_ports accept
-        tcp dport @web_ports drop
+{chain_rules}
     }}
 }}
 """
-    return rules
+    return rules, mode, wl_skipped + bl_skipped
 
 
 def ensure_firewall_dirs():
@@ -128,7 +147,7 @@ def get_firewall_paths():
 
 def write_generated_rules_file():
     _, generated_file, _, _ = get_firewall_paths()
-    rules = build_nft_rules()
+    rules, _, _ = build_nft_rules()
     generated_file.write_text(rules, encoding='utf-8')
     return generated_file
 
@@ -281,13 +300,14 @@ def firewall_reset_command():
 @login_required
 def index():
     db = get_db()
+    mode = get_setting('firewall_mode', 'whitelist')
     stats = {
         'services': db.execute('SELECT COUNT(*) AS count FROM services').fetchone()['count'],
         'attempts': db.execute('SELECT COUNT(*) AS count FROM attempts').fetchone()['count'],
         'whitelist': db.execute('SELECT COUNT(*) AS count FROM whitelist_entries WHERE enabled = 1').fetchone()['count'],
         'blacklist': db.execute('SELECT COUNT(*) AS count FROM blacklist_entries WHERE enabled = 1').fetchone()['count'],
     }
-    return render_template('index.html', stats=stats)
+    return render_template('index.html', stats=stats, mode=mode)
 
 
 @bp.route('/services', methods=['GET', 'POST'])
@@ -369,6 +389,177 @@ def delete_service(service_id):
 
     flash(f'Сервис "{service["name"]}" удалён.', 'success')
     return redirect(url_for('main.services'))
+
+
+# ---------------------------------------------------------------------------
+# Парсер логов nftables
+# ---------------------------------------------------------------------------
+
+def parse_nft_log_line(line):
+    """
+    Разобрать одну строку лога nftables из journald / /var/log/kern.log.
+    Ожидаемый формат (пример):
+      Jun  5 10:23:01 hostname kernel: BUTLER_DROP: IN=eth0 OUT= ... SRC=1.2.3.4 DST=10.0.0.1 ... PROTO=TCP ... DPT=8011 ...
+    Возвращает dict {ip, port, ts} или None.
+    """
+    import re
+    m_src  = re.search(r'SRC=(\S+)',  line)
+    m_dpt  = re.search(r'DPT=(\d+)',  line)
+    m_ts   = re.search(
+        r'^(\w{3}\s+\d+\s+\d+:\d+:\d+)',
+        line
+    )
+    if not (m_src and m_dpt):
+        return None
+    ip_raw = m_src.group(1)
+    port   = int(m_dpt.group(1))
+    ts_raw = m_ts.group(1) if m_ts else None
+    # Проверим что IP валидный
+    try:
+        ip = str(ipaddress.ip_address(ip_raw))
+    except ValueError:
+        return None
+    return {'ip': ip, 'port': port, 'ts_raw': ts_raw}
+
+
+@bp.route('/attempts/import-log', methods=['POST'])
+@login_required
+def import_attempts_from_log():
+    """
+    Импортировать попытки из файла лога.
+    Источник: поле формы log_source ('journal' или 'file') + путь/текст.
+    """
+    db = get_db()
+    log_text = ''
+    source = request.form.get('log_source', 'text')
+
+    if source == 'file':
+        log_path_raw = request.form.get('log_path', '').strip()
+        if not log_path_raw:
+            flash('Укажите путь к файлу лога.', 'error')
+            return redirect(url_for('main.attempts'))
+        try:
+            log_text = Path(log_path_raw).read_text(encoding='utf-8', errors='replace')
+        except Exception as exc:
+            flash(f'Не удалось прочитать файл: {exc}', 'error')
+            return redirect(url_for('main.attempts'))
+    elif source == 'journal':
+        try:
+            result = subprocess.run(
+                ['sudo', '-n', 'journalctl', '-k', '--no-pager', '-n', '5000', '--output=short-precise'],
+                capture_output=True, text=True, timeout=15
+            )
+            log_text = result.stdout
+        except Exception as exc:
+            flash(f'Не удалось получить journald: {exc}', 'error')
+            return redirect(url_for('main.attempts'))
+    else:
+        log_text = request.form.get('log_text', '')
+
+    # Найдём все сервисы для сопоставления портов
+    services_by_port = {
+        row['port']: row['name']
+        for row in db.execute('SELECT port, name FROM services').fetchall()
+    }
+
+    added = 0
+    for line in log_text.splitlines():
+        parsed = parse_nft_log_line(line)
+        if parsed is None:
+            continue
+        ip   = parsed['ip']
+        port = parsed['port']
+        service_name = services_by_port.get(port, f'port-{port}')
+
+        existing = db.execute(
+            'SELECT id, attempts_count FROM attempts WHERE ip_address = ? AND port = ?',
+            (ip, port)
+        ).fetchone()
+
+        if existing:
+            db.execute(
+                'UPDATE attempts SET attempts_count = attempts_count + 1, last_seen = CURRENT_TIMESTAMP WHERE id = ?',
+                (existing['id'],)
+            )
+        else:
+            db.execute(
+                'INSERT INTO attempts (ip_address, service_name, port, status) VALUES (?, ?, ?, ?)',
+                (ip, service_name, port, 'new')
+            )
+            added += 1
+
+    db.commit()
+    flash(f'Импортировано новых записей: {added}.', 'success')
+    return redirect(url_for('main.attempts'))
+
+
+@bp.route('/attempts/<int:attempt_id>/allow', methods=['POST'])
+@login_required
+def allow_attempt(attempt_id):
+    db = get_db()
+    row = db.execute('SELECT * FROM attempts WHERE id = ?', (attempt_id,)).fetchone()
+    if row is None:
+        flash('Попытка не найдена.', 'error')
+        return redirect(url_for('main.attempts'))
+
+    ip = row['ip_address']
+    # Проверим дубликат в whitelist
+    exists = db.execute(
+        'SELECT id FROM whitelist_entries WHERE ip_address = ? AND enabled = 1', (ip,)
+    ).fetchone()
+    if exists:
+        flash(f'IP {ip} уже в белом списке.', 'error')
+        return redirect(url_for('main.attempts'))
+
+    db.execute(
+        'INSERT INTO whitelist_entries (ip_address, comment) VALUES (?, ?)',
+        (ip, f'Добавлен из попыток (порт {row["port"]})')
+    )
+    db.execute(
+        'UPDATE attempts SET status = ? WHERE id = ?',
+        ('allowed', attempt_id)
+    )
+    db.execute(
+        'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+        ('allow', 'ip', ip, f'Разрешён из попыток, порт {row["port"]}')
+    )
+    db.commit()
+    flash(f'IP {ip} добавлен в белый список.', 'success')
+    return redirect(url_for('main.attempts'))
+
+
+@bp.route('/attempts/<int:attempt_id>/block', methods=['POST'])
+@login_required
+def block_attempt(attempt_id):
+    db = get_db()
+    row = db.execute('SELECT * FROM attempts WHERE id = ?', (attempt_id,)).fetchone()
+    if row is None:
+        flash('Попытка не найдена.', 'error')
+        return redirect(url_for('main.attempts'))
+
+    ip = row['ip_address']
+    exists = db.execute(
+        'SELECT id FROM blacklist_entries WHERE ip_address = ? AND enabled = 1', (ip,)
+    ).fetchone()
+    if exists:
+        flash(f'IP {ip} уже в чёрном списке.', 'error')
+        return redirect(url_for('main.attempts'))
+
+    db.execute(
+        'INSERT INTO blacklist_entries (ip_address, reason, comment) VALUES (?, ?, ?)',
+        (ip, 'Заблокирован из попыток', f'Порт {row["port"]}, попыток: {row["attempts_count"]}')
+    )
+    db.execute(
+        'UPDATE attempts SET status = ? WHERE id = ?',
+        ('blocked', attempt_id)
+    )
+    db.execute(
+        'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+        ('block', 'ip', ip, f'Заблокирован из попыток, порт {row["port"]}')
+    )
+    db.commit()
+    flash(f'IP {ip} добавлен в чёрный список.', 'success')
+    return redirect(url_for('main.attempts'))
 
 
 @bp.route('/attempts')
@@ -533,20 +724,45 @@ def edit_whitelist_entry(entry_id):
 def blacklist():
     db = get_db()
     if request.method == 'POST':
-        ip_address = request.form['ip_address'].strip()
-        reason = request.form['reason'].strip()
+        ip_address_raw = request.form['ip_address'].strip()
+        reason  = request.form['reason'].strip()
         comment = request.form['comment'].strip()
 
-        if ip_address:
-            db.execute(
-                'INSERT INTO blacklist_entries (ip_address, reason, comment) VALUES (?, ?, ?)',
-                (ip_address, reason, comment)
-            )
-            db.execute(
-                'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
-                ('block', 'ip', ip_address, comment or reason or 'IP добавлен в черный список')
-            )
-            db.commit()
+        error = None
+        normalized_ip = None
+
+        if not ip_address_raw:
+            error = 'IP-адрес обязателен.'
+        else:
+            normalized_ip = validate_ip_address(ip_address_raw)
+            if normalized_ip is None:
+                error = 'Укажите корректный IPv4 или IPv6 адрес.'
+
+        if error is None:
+            existing = db.execute(
+                'SELECT id FROM blacklist_entries WHERE ip_address = ? AND enabled = 1',
+                (normalized_ip,)
+            ).fetchone()
+            if existing is not None:
+                error = f'IP-адрес {normalized_ip} уже есть в чёрном списке.'
+
+        if error is None:
+            try:
+                db.execute(
+                    'INSERT INTO blacklist_entries (ip_address, reason, comment) VALUES (?, ?, ?)',
+                    (normalized_ip, reason, comment)
+                )
+                db.execute(
+                    'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+                    ('block', 'ip', normalized_ip, comment or reason or 'IP добавлен в чёрный список')
+                )
+                db.commit()
+                flash(f'IP {normalized_ip} добавлен в чёрный список.', 'success')
+            except Exception:
+                flash('Не удалось добавить запись.', 'error')
+        else:
+            flash(error, 'error')
+
         return redirect(url_for('main.blacklist'))
 
     rows = db.execute(
@@ -659,16 +875,39 @@ def audit_log():
     return render_template('audit_log.html', entries=rows)
 
 
+# ---------------------------------------------------------------------------
+# Переключатель режима
+# ---------------------------------------------------------------------------
+
+@bp.route('/settings/firewall-mode', methods=['POST'])
+@login_required
+def set_firewall_mode():
+    new_mode = request.form.get('mode', 'whitelist')
+    if new_mode not in ('whitelist', 'blacklist'):
+        flash('Неверный режим.', 'error')
+        return redirect(url_for('main.firewall'))
+    old_mode = get_setting('firewall_mode', 'whitelist')
+    set_setting('firewall_mode', new_mode)
+    get_db().execute(
+        'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+        ('setting', 'firewall_mode', new_mode, f'Режим изменён с {old_mode} на {new_mode}')
+    )
+    get_db().commit()
+    flash(f'Режим изменён на: {"только белый список" if new_mode == "whitelist" else "только чёрный список"}.', 'success')
+    return redirect(url_for('main.firewall'))
+
+
 @bp.route('/firewall')
 @login_required
 def firewall():
-    rules = build_nft_rules()
-    return render_template('firewall.html', rules=rules)
+    rules, mode, skipped = build_nft_rules()
+    return render_template('firewall.html', rules=rules, mode=mode, skipped=skipped)
+
 
 @bp.route('/firewall/export', methods=['POST'])
 @login_required
 def export_firewall():
-    rules = build_nft_rules()
+    rules, _, _ = build_nft_rules()
 
     output_dir = Path('generated')
     output_dir.mkdir(exist_ok=True)
@@ -683,7 +922,13 @@ def export_firewall():
 @bp.route('/firewall/apply', methods=['POST'])
 @login_required
 def firewall_apply():
+    confirm = request.form.get('confirm_apply')
+    if confirm != 'yes':
+        flash('Применение отменено: не подтверждено.', 'error')
+        return redirect(url_for('main.firewall'))
     try:
+        # Перегенерировать с актуальным режимом
+        write_generated_rules_file()
         generated_file, target_file, backup_file = apply_firewall_rules()
 
         if backup_file:
@@ -705,6 +950,10 @@ def firewall_apply():
 @bp.route('/firewall/reset', methods=['POST'])
 @login_required
 def firewall_reset():
+    confirm = request.form.get('confirm_reset')
+    if confirm != 'yes':
+        flash('Сброс отменён: не подтверждён.', 'error')
+        return redirect(url_for('main.firewall'))
     try:
         target_file, backup_file = reset_firewall_rules()
 

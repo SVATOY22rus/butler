@@ -1,32 +1,102 @@
 {% extends 'base.html' %}
 {% block title %}Попытки — Дворецкий{% endblock %}
 {% block content %}
+
 <section class="panel">
-    <h2>Попытки подключений</h2>
-    <p>Пока здесь тестовые записи. Позже мы подключим реальные логи и автоматический импорт событий.</p>
+    <h2>Импорт из лога nftables</h2>
+    <p>
+        Укажите источник событий. Ожидается формат ядра Linux с полями <code>SRC=</code> и <code>DPT=</code>
+        (например, строки с меткой <code>BUTLER_DROP:</code>).
+    </p>
+
+    <form method="post" action="{{ url_for('main.import_attempts_from_log') }}" class="form-grid">
+        <label class="full-width">
+            Источник
+            <select name="log_source" id="log_source_select" onchange="toggleLogSource(this.value)" style="padding:10px 12px;border-radius:8px;border:1px solid #cbd5e1;font-size:16px;">
+                <option value="text">Вставить текст вручную</option>
+                <option value="file">Файл на сервере (путь)</option>
+                <option value="journal">journald (sudo journalctl -k)</option>
+            </select>
+        </label>
+
+        <div id="log_text_block" class="full-width">
+            <label>
+                Текст лога
+                <textarea name="log_text" rows="6" placeholder="Jun  5 10:23:01 host kernel: BUTLER_DROP: IN=eth0 SRC=1.2.3.4 DST=10.0.0.1 PROTO=TCP DPT=8011 ..."
+                          style="width:100%;padding:10px;border-radius:8px;border:1px solid #cbd5e1;font-size:14px;font-family:monospace;box-sizing:border-box;"></textarea>
+            </label>
+        </div>
+
+        <div id="log_file_block" class="full-width" style="display:none;">
+            <label>
+                Путь к файлу
+                <input type="text" name="log_path" placeholder="/var/log/kern.log">
+            </label>
+        </div>
+
+        <button type="submit">Импортировать</button>
+    </form>
+</section>
+
+<section class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <h2 style="margin:0;">Попытки подключений</h2>
+        <span class="stat-badge">Всего: {{ attempts|length }}</span>
+    </div>
+
+    {% if attempts %}
     <table>
         <thead>
             <tr>
-                <th>IP</th>
+                <th>IP-адрес</th>
                 <th>Сервис</th>
                 <th>Порт</th>
                 <th>Попыток</th>
+                <th>Первый раз</th>
+                <th>Последний раз</th>
                 <th>Статус</th>
                 <th>Заметка</th>
+                <th>Действия</th>
             </tr>
         </thead>
         <tbody>
             {% for item in attempts %}
-            <tr>
-                <td>{{ item.ip_address }}</td>
+            <tr class="attempt-row attempt-{{ item.status }}">
+                <td><code>{{ item.ip_address }}</code></td>
                 <td>{{ item.service_name }}</td>
                 <td>{{ item.port }}</td>
                 <td>{{ item.attempts_count }}</td>
-                <td>{{ item.status }}</td>
-                <td>{{ item.note }}</td>
+                <td>{{ item.first_seen }}</td>
+                <td>{{ item.last_seen }}</td>
+                <td>
+                    <span class="status-badge status-{{ item.status }}">{{ item.status }}</span>
+                </td>
+                <td>{{ item.note or '—' }}</td>
+                <td class="actions-cell">
+                    {% if item.status == 'new' %}
+                    <form method="post" action="{{ url_for('main.allow_attempt', attempt_id=item.id) }}">
+                        <button type="submit" class="allow-button">Разрешить</button>
+                    </form>
+                    <form method="post" action="{{ url_for('main.block_attempt', attempt_id=item.id) }}">
+                        <button type="submit" class="danger-button">Заблокировать</button>
+                    </form>
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    {% else %}
+    <p style="color:#6b7280;margin-top:12px;">Пока записей нет. Импортируйте лог выше.</p>
+    {% endif %}
 </section>
+
+<script>
+function toggleLogSource(val) {
+    document.getElementById('log_text_block').style.display = val === 'text' ? '' : 'none';
+    document.getElementById('log_file_block').style.display = val === 'file' ? '' : 'none';
+}
+</script>
 {% endblock %}
