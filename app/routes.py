@@ -567,7 +567,19 @@ def block_attempt(attempt_id):
 def attempts():
     db = get_db()
     rows = db.execute('SELECT * FROM attempts ORDER BY last_seen DESC, id DESC').fetchall()
-    return render_template('attempts.html', attempts=rows)
+
+    # Собрать подписи к адресам: сначала белый список, потом чёрный
+    ip_labels = {}
+    for r in db.execute('SELECT ip_address, owner_name, comment FROM whitelist_entries WHERE enabled = 1').fetchall():
+        label = r['owner_name'] or r['comment'] or ''
+        if label:
+            ip_labels[r['ip_address']] = ('whitelist', label)
+    for r in db.execute('SELECT ip_address, reason, comment FROM blacklist_entries WHERE enabled = 1').fetchall():
+        label = r['comment'] or r['reason'] or ''
+        if label:
+            ip_labels[r['ip_address']] = ('blacklist', label)
+
+    return render_template('attempts.html', attempts=rows, ip_labels=ip_labels)
 
 
 @bp.route('/whitelist', methods=['GET', 'POST'])
@@ -873,6 +885,115 @@ def audit_log():
     db = get_db()
     rows = db.execute('SELECT * FROM audit_log ORDER BY created_at DESC, id DESC').fetchall()
     return render_template('audit_log.html', entries=rows)
+
+
+# ---------------------------------------------------------------------------
+# Сброс соединений через conntrack
+# ---------------------------------------------------------------------------
+
+def _conntrack_drop_ip(ip):
+    """Сбросить все соединения с указанного IP. Возвращает (ok, err_text)."""
+    try:
+        r = subprocess.run(
+            ['sudo', '-n', 'conntrack', '-D', '-s', ip],
+            capture_output=True, text=True, timeout=10
+        )
+        # conntrack возвращает код 1 если записей не было — это не ошибка
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _conntrack_drop_port(port, proto='tcp'):
+    """Сбросить все соединения на указанный порт."""
+    try:
+        r = subprocess.run(
+            ['sudo', '-n', 'conntrack', '-D', '-p', proto, '--dport', str(port)],
+            capture_output=True, text=True, timeout=10
+        )
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+@bp.route('/conntrack/drop-ips', methods=['POST'])
+@login_required
+def conntrack_drop_ips():
+    """Сбросить соединения по выбранным IP (чекбоксы) или всем."""
+    db = get_db()
+    drop_all = request.form.get('drop_all') == '1'
+
+    if drop_all:
+        rows = db.execute(
+            'SELECT ip_address FROM whitelist_entries WHERE enabled = 1 '
+            'UNION SELECT ip_address FROM blacklist_entries WHERE enabled = 1'
+        ).fetchall()
+        ips = [r['ip_address'] for r in rows]
+    else:
+        ips = request.form.getlist('ip_address')
+
+    if not ips:
+        flash('Не выбран ни один IP-адрес.', 'error')
+        return redirect(request.referrer or url_for('main.whitelist'))
+
+    ok_count = 0
+    for ip in ips:
+        ok, err = _conntrack_drop_ip(ip)
+        if ok:
+            ok_count += 1
+        else:
+            flash(f'Ошибка при сбросе {ip}: {err}', 'error')
+
+    db.execute(
+        'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+        ('conntrack_drop', 'ip', ', '.join(ips), f'Сброшено соединений: {ok_count}')
+    )
+    db.commit()
+    flash(f'Соединения сброшены для {ok_count} из {len(ips)} адресов.', 'success')
+    return redirect(request.referrer or url_for('main.whitelist'))
+
+
+@bp.route('/conntrack/drop-ports', methods=['POST'])
+@login_required
+def conntrack_drop_ports():
+    """Сбросить соединения по выбранным портам или всем."""
+    db = get_db()
+    drop_all = request.form.get('drop_all') == '1'
+
+    if drop_all:
+        rows = db.execute('SELECT port, protocol FROM services').fetchall()
+        ports = [(r['port'], r['protocol']) for r in rows]
+    else:
+        raw = request.form.getlist('port')
+        if raw:
+            placeholders = ','.join(['?'] * len(raw))
+            rows = db.execute(
+                f'SELECT port, protocol FROM services WHERE port IN ({placeholders})',
+                raw
+            ).fetchall()
+        else:
+            rows = []
+        ports = [(r['port'], r['protocol']) for r in rows]
+
+    if not ports:
+        flash('Не выбран ни один порт.', 'error')
+        return redirect(url_for('main.services'))
+
+    ok_count = 0
+    for port, proto in ports:
+        ok, err = _conntrack_drop_port(port, proto or 'tcp')
+        if ok:
+            ok_count += 1
+        else:
+            flash(f'Ошибка при сбросе порта {port}: {err}', 'error')
+
+    db.execute(
+        'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+        ('conntrack_drop', 'port', ', '.join(str(p[0]) for p in ports), f'Сброшено: {ok_count}')
+    )
+    db.commit()
+    flash(f'Соединения сброшены для {ok_count} из {len(ports)} портов.', 'success')
+    return redirect(url_for('main.services'))
 
 
 # ---------------------------------------------------------------------------

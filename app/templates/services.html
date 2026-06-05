@@ -1,9 +1,10 @@
 {% extends 'base.html' %}
 {% block title %}Сервисы — Дворецкий{% endblock %}
 {% block content %}
+
 <section class="panel">
     <h2>Сервисы</h2>
-    <p>Здесь мы храним список сервисов, которые работают на сервере на отдельных портах.</p>
+    <p>Список сервисов, работающих на сервере на отдельных портах.</p>
     <form method="post" class="form-grid">
         <label>
             Имя сервиса
@@ -26,35 +27,63 @@
 </section>
 
 <section class="panel">
-    <h2>Список сервисов</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>ID</th>
-                <th>Имя</th>
-                <th>Порт</th>
-                <th>Протокол</th>
-                <th>Описание</th>
-                <th>Действия</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in services %}
-            <tr>
-                <td>{{ item.id }}</td>
-                <td>{{ item.name }}</td>
-                <td>{{ item.port }}</td>
-                <td>{{ item.protocol }}</td>
-                <td>{{ item.description }}</td>
-                <td>
-                    <form method="post" action="{{ url_for('main.delete_service', service_id=item.id) }}">
-                        <button type="submit" class="danger-button">Удалить</button>
-                    </form>
-                </td>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
+        <h2 style="margin:0;">Список сервисов</h2>
+        <div style="display:flex;gap:8px;">
+            <button type="button" class="secondary-button" onclick="selectAllPorts(true)">Выбрать все</button>
+            <button type="button" class="secondary-button" onclick="selectAllPorts(false)">Снять выбор</button>
+        </div>
+    </div>
 
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <form method="post" action="{{ url_for('main.conntrack_drop_ports') }}" id="ports-form">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:40px;"><input type="checkbox" id="check-all-ports" onchange="selectAllPorts(this.checked)"></th>
+                    <th>ID</th>
+                    <th>Имя</th>
+                    <th>Порт</th>
+                    <th>Протокол</th>
+                    <th>Описание</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in services %}
+                <tr>
+                    <td><input type="checkbox" name="port" value="{{ item.port }}" class="port-check"></td>
+                    <td>{{ item.id }}</td>
+                    <td>{{ item.name }}</td>
+                    <td><code>{{ item.port }}</code></td>
+                    <td>{{ item.protocol }}</td>
+                    <td>{{ item.description }}</td>
+                    <td>
+                        <form method="post" action="{{ url_for('main.delete_service', service_id=item.id) }}">
+                            <button type="submit" class="danger-button">Удалить</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="bulk-actions">
+            <button type="submit" class="button-warning"
+                    onclick="return confirm('Сбросить соединения для выбранных портов?')">
+                Сбросить соединения (выбранные)
+            </button>
+            <button type="submit" name="drop_all" value="1" class="danger-button"
+                    onclick="return confirm('Сбросить соединения для ВСЕХ портов?')">
+                Сбросить все соединения
+            </button>
+        </div>
+    </form>
 </section>
+
+<script>
+function selectAllPorts(checked) {
+    document.querySelectorAll('.port-check').forEach(cb => cb.checked = checked);
+    document.getElementById('check-all-ports').checked = checked;
+}
+</script>
 {% endblock %}

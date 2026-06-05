@@ -1,0 +1,11 @@
+[Unit]
+Description=Butler — импорт попыток подключений из journald
+After=network.target
+
+[Service]
+Type=oneshot
+User=loktar
+WorkingDirectory=/home/loktar/serv/butler
+ExecStart=/home/loktar/serv/butler/.venv/bin/python3 /home/loktar/serv/butler/butler-log-import.py
+StandardOutput=journal
+StandardError=journal

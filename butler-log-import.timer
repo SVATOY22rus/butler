@@ -1,0 +1,11 @@
+[Unit]
+Description=Butler — запуск импорта логов каждые 5 минут
+Requires=butler-log-import.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -5,35 +5,33 @@
 <section class="panel">
     <h2>Импорт из лога nftables</h2>
     <p>
-        Укажите источник событий. Ожидается формат ядра Linux с полями <code>SRC=</code> и <code>DPT=</code>
-        (например, строки с меткой <code>BUTLER_DROP:</code>).
+        Укажите источник событий. Парсер ищет строки с полями <code>SRC=</code> и <code>DPT=</code>
+        на портах из таблицы сервисов.
     </p>
-
     <form method="post" action="{{ url_for('main.import_attempts_from_log') }}" class="form-grid">
         <label class="full-width">
             Источник
-            <select name="log_source" id="log_source_select" onchange="toggleLogSource(this.value)" style="padding:10px 12px;border-radius:8px;border:1px solid #cbd5e1;font-size:16px;">
+            <select name="log_source" onchange="toggleLogSource(this.value)"
+                    style="padding:10px 12px;border-radius:8px;border:1px solid #cbd5e1;font-size:16px;">
                 <option value="text">Вставить текст вручную</option>
                 <option value="file">Файл на сервере (путь)</option>
                 <option value="journal">journald (sudo journalctl -k)</option>
             </select>
         </label>
-
         <div id="log_text_block" class="full-width">
             <label>
                 Текст лога
-                <textarea name="log_text" rows="6" placeholder="Jun  5 10:23:01 host kernel: BUTLER_DROP: IN=eth0 SRC=1.2.3.4 DST=10.0.0.1 PROTO=TCP DPT=8011 ..."
-                          style="width:100%;padding:10px;border-radius:8px;border:1px solid #cbd5e1;font-size:14px;font-family:monospace;box-sizing:border-box;"></textarea>
+                <textarea name="log_text" rows="5"
+                    placeholder="Jun  5 10:23:01 host kernel: IN=eth0 SRC=1.2.3.4 DST=10.0.0.1 PROTO=TCP DPT=8011 ..."
+                    style="width:100%;padding:10px;border-radius:8px;border:1px solid #cbd5e1;font-size:13px;font-family:monospace;box-sizing:border-box;"></textarea>
             </label>
         </div>
-
         <div id="log_file_block" class="full-width" style="display:none;">
             <label>
                 Путь к файлу
                 <input type="text" name="log_path" placeholder="/var/log/kern.log">
             </label>
         </div>
-
         <button type="submit">Импортировать</button>
     </form>
 </section>
@@ -49,6 +47,7 @@
         <thead>
             <tr>
                 <th>IP-адрес</th>
+                <th>Кто</th>
                 <th>Сервис</th>
                 <th>Порт</th>
                 <th>Попыток</th>
@@ -61,16 +60,22 @@
         </thead>
         <tbody>
             {% for item in attempts %}
+            {% set label_info = ip_labels.get(item.ip_address) %}
             <tr class="attempt-row attempt-{{ item.status }}">
                 <td><code>{{ item.ip_address }}</code></td>
+                <td>
+                    {% if label_info %}
+                        <span class="ip-label ip-label-{{ label_info[0] }}">{{ label_info[1] }}</span>
+                    {% else %}
+                        <span style="color:#9ca3af;">—</span>
+                    {% endif %}
+                </td>
                 <td>{{ item.service_name }}</td>
                 <td>{{ item.port }}</td>
                 <td>{{ item.attempts_count }}</td>
                 <td>{{ item.first_seen }}</td>
                 <td>{{ item.last_seen }}</td>
-                <td>
-                    <span class="status-badge status-{{ item.status }}">{{ item.status }}</span>
-                </td>
+                <td><span class="status-badge status-{{ item.status }}">{{ item.status }}</span></td>
                 <td>{{ item.note or '—' }}</td>
                 <td class="actions-cell">
                     {% if item.status == 'new' %}
@@ -78,7 +83,7 @@
                         <button type="submit" class="allow-button">Разрешить</button>
                     </form>
                     <form method="post" action="{{ url_for('main.block_attempt', attempt_id=item.id) }}">
-                        <button type="submit" class="danger-button">Заблокировать</button>
+                        <button type="submit" class="danger-button">Блок</button>
                     </form>
                     {% else %}
                         —
@@ -89,7 +94,7 @@
         </tbody>
     </table>
     {% else %}
-    <p style="color:#6b7280;margin-top:12px;">Пока записей нет. Импортируйте лог выше.</p>
+    <p style="color:#6b7280;margin-top:12px;">Записей пока нет. Импортируйте лог выше или дождитесь автосбора (каждые 5 мин).</p>
     {% endif %}
 </section>
 

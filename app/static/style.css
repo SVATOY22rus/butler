@@ -369,3 +369,30 @@ code {
     font-family: monospace;
     font-size: 13px;
 }
+
+/* --- Массовые действия --- */
+.bulk-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+}
+
+/* --- Подписи IP в таблице попыток --- */
+.ip-label {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+.ip-label-whitelist {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.ip-label-blacklist {
+    background: #fee2e2;
+    color: #991b1b;
+}
