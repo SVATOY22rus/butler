@@ -22,9 +22,28 @@ TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 OUTPUT_NAME="butler-deploy-${TIMESTAMP}.tar.gz"
 OUTPUT_DIR="$(dirname "$PROJECT_DIR")"
 
-PYTHON_BIN="python3"
 PLATFORM="linux_x86_64"
 SKIP_WHEELS=0
+
+# Автоопределение Python: предпочитаем venv проекта, потом python3, потом python
+_find_python() {
+  local VENV_PY="${SCRIPT_DIR}/.venv/bin/python3"
+  if [[ -x "$VENV_PY" ]]; then
+    echo "$VENV_PY"
+  elif command -v python3 &>/dev/null && python3 -m pip --version &>/dev/null 2>&1; then
+    echo "python3"
+  elif command -v python &>/dev/null && python -m pip --version &>/dev/null 2>&1; then
+    echo "python"
+  else
+    echo ""
+  fi
+}
+
+PYTHON_BIN="${PYTHON_BIN:-$(_find_python)}"
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  die "Не найден Python с pip. Укажи вручную: ./build.sh --python /path/to/python3"
+fi
 
 # Автоопределение версии Python
 PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
