@@ -199,12 +199,30 @@ TIMER_SERVICE_SRC="${INNER_DIR}/butler-log-import.service"
 TIMER_SRC="${INNER_DIR}/butler-log-import.timer"
 
 if [[ -f "$TIMER_SERVICE_SRC" ]] && [[ -f "$TIMER_SRC" ]]; then
-  # Подставляем реальные пути в юниты
-  sudo sed \
-    -e "s|ExecStart=.*butler-log-import.py|ExecStart=${PYTHON_BIN} ${INNER_DIR}/butler-log-import.py|g" \
-    -e "s|WorkingDirectory=.*|WorkingDirectory=${INNER_DIR}|g" \
-    "$TIMER_SERVICE_SRC" \
-    | sudo tee /etc/systemd/system/butler-log-import.service > /dev/null
+  # Добавляем пользователя в группу systemd-journal для чтения kernel-логов
+  if getent group systemd-journal > /dev/null 2>&1; then
+    sudo usermod -aG systemd-journal "${BUTLER_USER}" 2>/dev/null || true
+    ok "Пользователь ${BUTLER_USER} добавлен в группу systemd-journal."
+  fi
+
+  # Генерируем полный unit с реальными путями
+  sudo tee /etc/systemd/system/butler-log-import.service > /dev/null <<TIMER_UNIT
+[Unit]
+Description=Butler — импорт попыток подключений из journald
+After=network.target
+
+[Service]
+Type=oneshot
+User=${BUTLER_USER}
+Group=${BUTLER_USER}
+SupplementaryGroups=systemd-journal
+WorkingDirectory=${INNER_DIR}
+EnvironmentFile=${ENV_FILE}
+Environment=BUTLER_ENV_FILE=${ENV_FILE}
+ExecStart=${PYTHON_BIN} ${INNER_DIR}/butler-log-import.py
+StandardOutput=journal
+StandardError=journal
+TIMER_UNIT
 
   sudo cp "$TIMER_SRC" /etc/systemd/system/butler-log-import.timer
   sudo systemctl daemon-reload
