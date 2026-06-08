@@ -3,8 +3,8 @@
 {% block content %}
 
 <section class="panel">
-    <h2>Сервисы</h2>
-    <p>Список сервисов, работающих на сервере. Можно указать несколько портов через запятую или диапазон.</p>
+    <h2>Добавить сервис</h2>
+    <p>Укажите имя и порты. Несколько портов — через запятую или диапазон через дефис.</p>
     <form method="post" class="form-grid">
         <label>
             Имя сервиса
@@ -12,8 +12,8 @@
         </label>
         <label>
             Порты
-            <input type="text" name="ports_raw" placeholder="8011 или 80, 443 или 8000-8100" required>
-            <small style="color:#6b7280;font-size:12px;">Один порт, несколько через запятую или диапазон через дефис</small>
+            <input type="text" name="ports_raw" placeholder="8011 или 80,443 или 8000-8100" required>
+            <small>Один порт, несколько через запятую или диапазон через дефис</small>
         </label>
         <label>
             Протокол
@@ -23,13 +23,15 @@
             Описание
             <input type="text" name="description" placeholder="Короткое описание сервиса">
         </label>
-        <button type="submit">Добавить сервис</button>
+        <div class="full-width">
+            <button type="submit">Добавить сервис</button>
+        </div>
     </form>
 </section>
 
 <section class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
-        <h2 style="margin:0;">Список сервисов</h2>
+    <div class="panel-header">
+        <h2>Список сервисов</h2>
         <div style="display:flex;gap:8px;">
             <button type="button" class="secondary-button" onclick="selectAllPorts(true)">Выбрать все</button>
             <button type="button" class="secondary-button" onclick="selectAllPorts(false)">Снять выбор</button>
@@ -37,48 +39,51 @@
     </div>
 
     <form method="post" action="{{ url_for('main.conntrack_drop_ports') }}" id="ports-form">
-        <table>
-            <thead>
-                <tr>
-                    <th style="width:40px;"><input type="checkbox" id="check-all-ports" onchange="selectAllPorts(this.checked)"></th>
-                    <th>ID</th>
-                    <th>Имя</th>
-                    <th>Порты</th>
-                    <th>Протокол</th>
-                    <th>Описание</th>
-                    <th>Действия</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for item in services %}
-                <tr>
-                    <td><input type="checkbox" name="port" value="{{ item.port }}" class="port-check"></td>
-                    <td>{{ item.id }}</td>
-                    <td>{{ item.name }}</td>
-                    <td>
-                        {% set pr = item.ports_raw if item.ports_raw else item.port|string %}
-                        <code>{{ pr }}</code>
-                    </td>
-                    <td>{{ item.protocol }}</td>
-                    <td>{{ item.description }}</td>
-                    <td>
-                        <form method="post" action="{{ url_for('main.delete_service', service_id=item.id) }}">
-                            <button type="submit" class="danger-button">Удалить</button>
-                        </form>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:40px;"><input type="checkbox" id="check-all-ports" onchange="selectAllPorts(this.checked)"></th>
+                        <th>ID</th>
+                        <th>Имя</th>
+                        <th>Порты</th>
+                        <th>Протокол</th>
+                        <th>Описание</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in services %}
+                    <tr>
+                        <td><input type="checkbox" name="port" value="{{ item.port }}" class="port-check"></td>
+                        <td>{{ item.id }}</td>
+                        <td>{{ item.name }}</td>
+                        <td>
+                            {% set pr = item.ports_raw if item.ports_raw else item.port|string %}
+                            <code>{{ pr }}</code>
+                        </td>
+                        <td>{{ item.protocol }}</td>
+                        <td>{{ item.description or '—' }}</td>
+                        <td class="actions-cell">
+                            <form method="post" action="{{ url_for('main.delete_service', service_id=item.id) }}">
+                                <button type="submit" class="danger-button"
+                                        onclick="return confirm('Удалить сервис {{ item.name }}?')">Удалить</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
 
         <div class="bulk-actions">
             <button type="submit" class="button-warning"
                     onclick="return confirm('Сбросить соединения для выбранных портов?')">
-                Сбросить соединения (выбранные)
+                Сбросить выбранные
             </button>
             <button type="submit" name="drop_all" value="1" class="danger-button"
                     onclick="return confirm('Сбросить соединения для ВСЕХ портов?')">
-                Сбросить все соединения
+                Сбросить все
             </button>
         </div>
     </form>

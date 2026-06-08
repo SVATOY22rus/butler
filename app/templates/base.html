@@ -9,24 +9,24 @@
 <body>
     <header class="site-header">
         <div class="container header-inner">
-            <div>
+            <div class="logo-block">
                 <h1 class="logo">Дворецкий</h1>
-                <p class="tagline">Панель управления доступом к сервисам</p>
+                <p class="tagline">Управление доступом к сервисам</p>
             </div>
 
             {% if session.get('authenticated') %}
             <nav class="nav">
-                <a href="{{ url_for('main.index') }}">Главная</a>
-                <a href="{{ url_for('main.services') }}">Сервисы</a>
-                <a href="{{ url_for('main.attempts') }}">Попытки</a>
-                <a href="{{ url_for('main.whitelist') }}">Белый список</a>
-                <a href="{{ url_for('main.blacklist') }}">Чёрный список</a>
-                <a href="{{ url_for('main.audit_log') }}">Журнал</a>
-                <a href="{{ url_for('main.firewall') }}">Firewall</a>
+                <a href="{{ url_for('main.index') }}"{% if request.endpoint == 'main.index' %} class="active"{% endif %}>Главная</a>
+                <a href="{{ url_for('main.services') }}"{% if request.endpoint == 'main.services' %} class="active"{% endif %}>Сервисы</a>
+                <a href="{{ url_for('main.attempts') }}"{% if request.endpoint == 'main.attempts' %} class="active"{% endif %}>Попытки</a>
+                <a href="{{ url_for('main.whitelist') }}"{% if request.endpoint in ('main.whitelist', 'main.edit_whitelist_entry') %} class="active"{% endif %}>Белый список</a>
+                <a href="{{ url_for('main.blacklist') }}"{% if request.endpoint in ('main.blacklist', 'main.edit_blacklist_entry') %} class="active"{% endif %}>Чёрный список</a>
+                <a href="{{ url_for('main.audit_log') }}"{% if request.endpoint == 'main.audit_log' %} class="active"{% endif %}>Журнал</a>
+                <a href="{{ url_for('main.firewall') }}"{% if request.endpoint == 'main.firewall' %} class="active"{% endif %}>Firewall</a>
             </nav>
 
             <form method="post" action="{{ url_for('main.logout') }}">
-                <button type="submit">Выйти</button>
+                <button type="submit" class="btn-logout">Выйти</button>
             </form>
             {% endif %}
         </div>

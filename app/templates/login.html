@@ -1,24 +1,27 @@
 {% extends 'base.html' %}
+{% block title %}Вход — Дворецкий{% endblock %}
 
 {% block content %}
-<section class="auth-card">
-    <h2>Вход в Дворецкий</h2>
-    <p>Введите логин и пароль администратора.</p>
+<div class="auth-wrap">
+    <section class="auth-card">
+        <h2>Вход в систему</h2>
+        <p>Введите логин и пароль администратора.</p>
 
-    <form method="post" class="form-grid">
-        <div class="form-row">
-            <label for="username">Логин</label>
-            <input id="username" name="username" type="text" required autofocus>
-        </div>
+        <form method="post" class="data-form">
+            <label>
+                Логин
+                <input id="username" name="username" type="text" required autofocus>
+            </label>
 
-        <div class="form-row">
-            <label for="password">Пароль</label>
-            <input id="password" name="password" type="password" required>
-        </div>
+            <label>
+                Пароль
+                <input id="password" name="password" type="password" required>
+            </label>
 
-        <div class="form-actions">
-            <button type="submit">Войти</button>
-        </div>
-    </form>
-</section>
+            <div class="form-actions">
+                <button type="submit">Войти</button>
+            </div>
+        </form>
+    </section>
+</div>
 {% endblock %}

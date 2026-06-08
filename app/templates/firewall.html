@@ -26,20 +26,26 @@
         </form>
     </div>
 
-    <p class="mode-hint">
-        {% if mode == 'whitelist' %}
-            <strong>Активен: белый список.</strong>
-            Доступ только у IP из белого списка. Все остальные — drop.
-        {% else %}
-            <strong>Активен: чёрный список.</strong>
-            Заблокированы только IP из чёрного списка. Все остальные — accept.
-        {% endif %}
+    {% if mode == 'whitelist' %}
+    <p class="mode-hint mode-hint-whitelist">
+        <strong>Активен: белый список.</strong>
+        Доступ только у IP из белого списка. Все остальные — drop.
     </p>
+    {% else %}
+    <p class="mode-hint mode-hint-blacklist">
+        <strong>Активен: чёрный список.</strong>
+        Заблокированы только IP из чёрного списка. Все остальные — accept.
+    </p>
+    {% endif %}
 </section>
 
 <section class="panel">
-    <h2>Сгенерированные правила</h2>
-    <p>Предпросмотр nftables-конфига на основе текущей базы и режима. Применяется только вручную.</p>
+    <div class="panel-header">
+        <div>
+            <h2>Сгенерированные правила</h2>
+            <p>Предпросмотр nftables-конфига на основе текущей базы и режима. Применяется только вручную.</p>
+        </div>
+    </div>
 
     {% if skipped %}
     <div class="flash flash-error" style="margin-bottom:12px;">

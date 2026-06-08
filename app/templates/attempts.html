@@ -3,67 +3,69 @@
 {% block content %}
 
 <section class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
-        <h2 style="margin:0;">Попытки подключений</h2>
+    <div class="panel-header">
+        <h2>Попытки подключений</h2>
         <div style="display:flex;align-items:center;gap:12px;">
             <span class="stat-badge">Всего: {{ attempts|length }}</span>
-            <span id="refresh-timer" style="font-size:13px;color:#6b7280;">Обновление через <span id="countdown">30</span> сек</span>
+            <span id="refresh-timer">Обновление через <span id="countdown">30</span> сек</span>
         </div>
     </div>
 
     {% if attempts %}
-    <table>
-        <thead>
-            <tr>
-                <th>IP-адрес</th>
-                <th>Кто</th>
-                <th>Сервис</th>
-                <th>Порт</th>
-                <th>Попыток</th>
-                <th>Первый раз</th>
-                <th>Последний раз</th>
-                <th>Статус</th>
-                <th>Заметка</th>
-                <th>Действия</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for item in attempts %}
-            {% set label_info = ip_labels.get(item.ip_address) %}
-            <tr class="attempt-row attempt-{{ item.status }}">
-                <td><code>{{ item.ip_address }}</code></td>
-                <td>
-                    {% if label_info %}
-                        <span class="ip-label ip-label-{{ label_info[0] }}">{{ label_info[1] }}</span>
-                    {% else %}
-                        <span style="color:#9ca3af;">—</span>
-                    {% endif %}
-                </td>
-                <td>{{ item.service_name }}</td>
-                <td>{{ item.port }}</td>
-                <td>{{ item.attempts_count }}</td>
-                <td>{{ item.first_seen }}</td>
-                <td>{{ item.last_seen }}</td>
-                <td><span class="status-badge status-{{ item.status }}">{{ item.status }}</span></td>
-                <td>{{ item.note or '—' }}</td>
-                <td class="actions-cell">
-                    {% if item.status == 'new' %}
-                    <form method="post" action="{{ url_for('main.allow_attempt', attempt_id=item.id) }}">
-                        <button type="submit" class="allow-button">Разрешить</button>
-                    </form>
-                    <form method="post" action="{{ url_for('main.block_attempt', attempt_id=item.id) }}">
-                        <button type="submit" class="danger-button">Блок</button>
-                    </form>
-                    {% else %}
-                        —
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>IP-адрес</th>
+                    <th>Кто</th>
+                    <th>Сервис</th>
+                    <th>Порт</th>
+                    <th>Попыток</th>
+                    <th>Первый раз</th>
+                    <th>Последний раз</th>
+                    <th>Статус</th>
+                    <th>Заметка</th>
+                    <th>Действия</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in attempts %}
+                {% set label_info = ip_labels.get(item.ip_address) %}
+                <tr class="attempt-row attempt-{{ item.status }}">
+                    <td><code>{{ item.ip_address }}</code></td>
+                    <td>
+                        {% if label_info %}
+                            <span class="ip-label ip-label-{{ label_info[0] }}">{{ label_info[1] }}</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ item.service_name }}</td>
+                    <td>{{ item.port }}</td>
+                    <td>{{ item.attempts_count }}</td>
+                    <td>{{ item.first_seen }}</td>
+                    <td>{{ item.last_seen }}</td>
+                    <td><span class="status-badge status-{{ item.status }}">{{ item.status }}</span></td>
+                    <td>{{ item.note or '—' }}</td>
+                    <td class="actions-cell">
+                        {% if item.status == 'new' %}
+                        <form method="post" action="{{ url_for('main.allow_attempt', attempt_id=item.id) }}">
+                            <button type="submit" class="allow-button">Разрешить</button>
+                        </form>
+                        <form method="post" action="{{ url_for('main.block_attempt', attempt_id=item.id) }}">
+                            <button type="submit" class="danger-button">Блок</button>
+                        </form>
+                        {% else %}
+                            —
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% else %}
-    <p style="color:#6b7280;margin-top:12px;">Записей пока нет. Данные собираются автоматически каждые 5 минут.</p>
+    <p class="text-muted">Записей пока нет. Данные собираются автоматически каждые 5 минут.</p>
     {% endif %}
 </section>
 

@@ -1,398 +1,676 @@
-body {
-    margin: 0;
-    font-family: Arial, sans-serif;
-    background: #f4f6f8;
-    color: #1f2937;
+/* ============================================================
+   Butler — стили v2
+   ============================================================ */
+
+/* --- Базовые переменные --- */
+:root {
+    --bg:           #f0f2f5;
+    --surface:      #ffffff;
+    --border:       #e2e8f0;
+    --text:         #1e293b;
+    --text-muted:   #64748b;
+    --primary:      #0f766e;
+    --primary-dark: #0d6460;
+    --danger:       #dc2626;
+    --danger-dark:  #b91c1c;
+    --warning:      #d97706;
+    --warning-dark: #b45309;
+    --radius:       10px;
+    --shadow:       0 1px 4px rgba(0,0,0,0.08);
+    --shadow-md:    0 4px 16px rgba(0,0,0,0.10);
 }
 
+/* --- Сброс и база --- */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+}
+
+/* --- Контейнер --- */
 .container {
-    width: min(1100px, calc(100% - 32px));
+    width: min(1200px, calc(100% - 32px));
     margin: 0 auto;
 }
 
+/* ============================================================
+   Шапка
+   ============================================================ */
 .site-header {
-    background: #1f2937;
+    background: #0f172a;
     color: #fff;
-    padding: 20px 0;
+    padding: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
 }
 
 .header-inner {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     gap: 24px;
     flex-wrap: wrap;
+    padding: 12px 0;
+    min-height: 56px;
 }
+
+.logo-block { flex-shrink: 0; }
 
 .logo {
     margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    color: #fff;
 }
 
 .tagline {
-    margin: 4px 0 0;
-    color: #cbd5e1;
+    margin: 0;
+    font-size: 12px;
+    color: #94a3b8;
 }
 
 .nav {
     display: flex;
-    gap: 14px;
+    gap: 2px;
     flex-wrap: wrap;
+    flex: 1;
 }
 
 .nav a {
+    color: #94a3b8;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.nav a:hover,
+.nav a.active {
+    background: rgba(255,255,255,0.08);
     color: #fff;
-    text-decoration: none;
-    font-weight: bold;
 }
 
-.page-content {
-    padding: 24px 0 48px;
-}
-
-.panel {
-    background: #fff;
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-}
-
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 20px;
-}
-
-.stat-card {
-    background: #fff;
-    border-radius: 12px;
-    padding: 20px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
-}
-
-.stat-number {
-    font-size: 32px;
-    font-weight: bold;
-    margin: 8px 0 0;
-}
-
-.form-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 16px;
-}
-
-.form-grid label {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    font-weight: bold;
-}
-
-.full-width {
-    grid-column: 1 / -1;
-}
-
-input, button {
-    padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid #cbd5e1;
-    font-size: 16px;
-}
-
-button {
-    background: #0f766e;
-    color: white;
-    border: none;
+.btn-logout {
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.08);
+    color: #94a3b8;
+    border: 1px solid rgba(255,255,255,0.12);
+    font-size: 13px;
     cursor: pointer;
-    font-weight: bold;
+    font-weight: 500;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
 }
 
-button:hover {
-    background: #115e59;
+.btn-logout:hover {
+    background: rgba(255,255,255,0.15);
+    color: #fff;
 }
 
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 12px;
-    background: #fff;
+/* ============================================================
+   Контент
+   ============================================================ */
+.page-content {
+    padding: 28px 0 56px;
 }
 
-th, td {
-    text-align: left;
-    padding: 12px;
-    border-bottom: 1px solid #e5e7eb;
-}
-
-th {
-    background: #f8fafc;
-}
-.flash-list {
-    display: grid;
-    gap: 12px;
-    margin-bottom: 20px;
-}
-
-.flash {
-    padding: 14px 16px;
-    border-radius: 10px;
-    font-weight: bold;
-}
-
-.flash-success {
-    background: #dcfce7;
-    color: #166534;
-    border: 1px solid #86efac;
-}
-
-.flash-error {
-    background: #fee2e2;
-    color: #991b1b;
-    border: 1px solid #fca5a5;
-}
-.danger-button {
-    background: #b91c1c;
-}
-
-.danger-button:hover {
-    background: #991b1b;
-}
-.actions-cell {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-}
-
-.secondary-button {
-    display: inline-block;
-    padding: 10px 14px;
-    border-radius: 8px;
-    background: #e5e7eb;
-    color: #111827;
-    text-decoration: none;
-    font-weight: bold;
-}
-
-.secondary-button:hover {
-    background: #d1d5db;
-}
-
-.form-actions {
-    display: flex;
-    gap: 12px;
-    margin-top: 20px;
-    align-items: center;
-}
-.code-block {
-    margin-top: 20px;
-    padding: 16px;
-    border-radius: 10px;
-    background: #111827;
-    color: #e5e7eb;
-    overflow-x: auto;
-    font-family: monospace;
-    font-size: 14px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-}
-.auth-card {
-    max-width: 420px;
-    margin: 40px auto;
+/* ============================================================
+   Панели
+   ============================================================ */
+.panel {
+    background: var(--surface);
+    border-radius: var(--radius);
     padding: 24px;
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 12px;
-}
-
-.flash-list {
     margin-bottom: 20px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
 }
 
-.flash {
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 10px;
+.panel h2 {
+    margin: 0 0 8px;
+    font-size: 17px;
+    font-weight: 600;
 }
 
-.flash-success {
-    background: #ecfdf3;
-    color: #166534;
-    border: 1px solid #bbf7d0;
+.panel > p:first-of-type {
+    margin: 0 0 16px;
+    color: var(--text-muted);
+    font-size: 14px;
 }
 
-.flash-error {
-    background: #fef2f2;
-    color: #991b1b;
-    border: 1px solid #fecaca;
-}
-.firewall-actions {
+.panel-header {
     display: flex;
-    gap: 12px;
+    justify-content: space-between;
+    align-items: center;
     flex-wrap: wrap;
+    gap: 12px;
     margin-bottom: 16px;
 }
 
-.button-danger {
-    background: #b91c1c;
-    color: #fff;
+.panel-header h2 { margin: 0; }
+
+/* ============================================================
+   Статистика (главная)
+   ============================================================ */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
 }
 
-.button-danger:hover {
-    background: #991b1b;
+.stat-card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    transition: box-shadow 0.15s;
 }
 
-/* --- Режим работы firewall --- */
+.stat-card:hover { box-shadow: var(--shadow-md); }
+
+.stat-card h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+
+.stat-number {
+    font-size: 36px;
+    font-weight: 700;
+    margin: 8px 0 0;
+    color: var(--text);
+    line-height: 1;
+}
+
+.stat-card-active {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(15,118,110,0.12);
+}
+
+.stat-mode-label {
+    font-size: 11px;
+    color: var(--primary);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 6px 0 0;
+}
+
+/* ============================================================
+   Режим работы (бейдж и переключатель)
+   ============================================================ */
+.mode-badge {
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.2px;
+}
+
+.mode-badge-whitelist {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #86efac;
+}
+
+.mode-badge-blacklist {
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fca5a5;
+}
+
 .mode-switcher {
     display: flex;
-    gap: 12px;
+    gap: 10px;
     flex-wrap: wrap;
-    margin-top: 12px;
+    margin: 12px 0;
 }
 
 .mode-active {
-    background: #0f766e;
-    color: #fff;
-    border: 2px solid #0f766e;
+    background: var(--primary) !important;
+    color: #fff !important;
+    border-color: var(--primary) !important;
 }
 
 .mode-inactive {
     background: #f1f5f9;
-    color: #334155;
-    border: 2px solid #cbd5e1;
+    color: #475569;
+    border: 1px solid var(--border);
 }
 
 .mode-inactive:hover {
     background: #e2e8f0;
+    color: var(--text);
 }
 
 .mode-hint {
     margin-top: 12px;
     padding: 12px 16px;
     border-radius: 8px;
+    font-size: 14px;
+}
+
+.mode-hint-whitelist {
     background: #f0fdf4;
     border: 1px solid #86efac;
-    color: #166534;
+    color: #15803d;
 }
 
-/* --- Бейдж режима на главной --- */
-.mode-badge {
-    padding: 6px 16px;
-    border-radius: 20px;
-    font-weight: bold;
-    font-size: 14px;
-}
-
-.mode-badge-whitelist {
-    background: #dcfce7;
-    color: #166534;
-    border: 1px solid #86efac;
-}
-
-.mode-badge-blacklist {
-    background: #fee2e2;
-    color: #991b1b;
+.mode-hint-blacklist {
+    background: #fef2f2;
     border: 1px solid #fca5a5;
+    color: #b91c1c;
 }
 
-/* --- Карточки статистики с подсветкой активного режима --- */
-.stat-card-active {
-    border: 2px solid #0f766e;
+/* ============================================================
+   Формы
+   ============================================================ */
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    align-items: end;
 }
 
-.stat-mode-label {
-    font-size: 12px;
-    color: #0f766e;
-    font-weight: bold;
-    text-transform: uppercase;
-    margin: 4px 0 0;
-}
-
-/* --- Статусы попыток --- */
-.status-badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 13px;
-    font-weight: bold;
-}
-
-.status-new {
-    background: #fef9c3;
-    color: #854d0e;
-}
-
-.status-allowed {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.status-blocked {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-.allow-button {
-    background: #0f766e;
-}
-
-.allow-button:hover {
-    background: #115e59;
-}
-
-/* --- Кнопка предупреждения (firewall apply) --- */
-.button-warning {
-    background: #b45309;
-    color: #fff;
-}
-
-.button-warning:hover {
-    background: #92400e;
-}
-
-/* --- Счётчик записей --- */
-.stat-badge {
-    display: inline-block;
-    padding: 4px 12px;
-    border-radius: 12px;
-    background: #e5e7eb;
-    color: #374151;
-    font-size: 14px;
-    font-weight: bold;
-}
-
-/* --- Код в тексте --- */
-code {
-    background: #f1f5f9;
-    padding: 1px 6px;
-    border-radius: 4px;
-    font-family: monospace;
-    font-size: 13px;
-}
-
-/* --- Массовые действия --- */
-.bulk-actions {
+.form-grid label {
     display: flex;
-    gap: 12px;
-    margin-top: 16px;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.full-width { grid-column: 1 / -1; }
+
+input[type=text],
+input[type=number],
+input[type=password],
+textarea,
+select {
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 14px;
+    font-family: inherit;
+    background: #fff;
+    color: var(--text);
+    transition: border-color 0.15s, box-shadow 0.15s;
+    width: 100%;
+}
+
+input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(15,118,110,0.12);
+}
+
+small {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.form-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 20px;
+    align-items: center;
     flex-wrap: wrap;
 }
 
-/* --- Подписи IP в таблице попыток --- */
+/* ============================================================
+   Кнопки
+   ============================================================ */
+button, .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 18px;
+    border-radius: 8px;
+    border: none;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    white-space: nowrap;
+    font-family: inherit;
+}
+
+/* Основная */
+button[type=submit]:not(.danger-button):not(.button-warning):not(.secondary-button):not(.mode-inactive):not(.btn-logout),
+.btn-primary {
+    background: var(--primary);
+    color: #fff;
+}
+
+button[type=submit]:not(.danger-button):not(.button-warning):not(.secondary-button):not(.mode-inactive):not(.btn-logout):hover,
+.btn-primary:hover {
+    background: var(--primary-dark);
+}
+
+/* Опасная */
+.danger-button {
+    background: var(--danger);
+    color: #fff;
+}
+
+.danger-button:hover { background: var(--danger-dark); }
+
+/* Предупреждение */
+.button-warning {
+    background: var(--warning);
+    color: #fff;
+}
+
+.button-warning:hover { background: var(--warning-dark); }
+
+/* Вторичная */
+.secondary-button {
+    display: inline-flex;
+    align-items: center;
+    padding: 9px 16px;
+    border-radius: 8px;
+    background: #f1f5f9;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+    font-family: inherit;
+}
+
+.secondary-button:hover { background: #e2e8f0; }
+
+/* Разрешить (зелёная) */
+.allow-button {
+    background: var(--primary);
+    color: #fff;
+}
+
+.allow-button:hover { background: var(--primary-dark); }
+
+/* Firewall danger */
+.button-danger {
+    background: var(--danger);
+    color: #fff;
+}
+
+.button-danger:hover { background: var(--danger-dark); }
+
+/* ============================================================
+   Таблицы
+   ============================================================ */
+.table-wrap { overflow-x: auto; }
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+th, td {
+    text-align: left;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+}
+
+th {
+    background: #f8fafc;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+}
+
+tbody tr:hover { background: #f8fafc; }
+tbody tr:last-child td { border-bottom: none; }
+
+.actions-cell {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+code {
+    background: #f1f5f9;
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    color: #0f766e;
+}
+
+/* ============================================================
+   Бейджи и статусы
+   ============================================================ */
+.stat-badge {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 20px;
+    background: #f1f5f9;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+}
+
+.status-new      { background: #fef9c3; color: #92400e; }
+.status-allowed  { background: #dcfce7; color: #15803d; }
+.status-blocked  { background: #fee2e2; color: #b91c1c; }
+
 .ip-label {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ip-label-whitelist { background: #dcfce7; color: #15803d; }
+.ip-label-blacklist { background: #fee2e2; color: #b91c1c; }
+
+/* ============================================================
+   Flash-сообщения
+   ============================================================ */
+.flash-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.flash {
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.flash-success {
+    background: #f0fdf4;
+    color: #15803d;
+    border: 1px solid #86efac;
+}
+
+.flash-error {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fca5a5;
+}
+
+/* ============================================================
+   Массовые действия
+   ============================================================ */
+.bulk-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+}
+
+/* ============================================================
+   Код (firewall preview)
+   ============================================================ */
+.code-block {
+    margin-top: 16px;
+    padding: 20px;
     border-radius: 10px;
+    background: #0f172a;
+    color: #e2e8f0;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: 13px;
-    font-weight: bold;
+    line-height: 1.6;
+    white-space: pre;
+    border: 1px solid #1e293b;
 }
 
-.ip-label-whitelist {
-    background: #dcfce7;
-    color: #166534;
+/* ============================================================
+   Firewall-действия
+   ============================================================ */
+.firewall-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
 }
 
-.ip-label-blacklist {
-    background: #fee2e2;
-    color: #991b1b;
+/* ============================================================
+   Страница входа
+   ============================================================ */
+.auth-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 80px);
 }
+
+.auth-card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--surface);
+    border-radius: 14px;
+    padding: 36px 32px;
+    box-shadow: var(--shadow-md);
+    border: 1px solid var(--border);
+}
+
+.auth-card h2 {
+    margin: 0 0 6px;
+    font-size: 22px;
+}
+
+.auth-card > p {
+    margin: 0 0 24px;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.auth-card .form-grid {
+    grid-template-columns: 1fr;
+}
+
+/* ============================================================
+   Страницы редактирования
+   ============================================================ */
+.page-header {
+    margin-bottom: 20px;
+}
+
+.page-header h1 {
+    font-size: 20px;
+    margin: 0 0 6px;
+}
+
+.page-header p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 14px;
+}
+
+.card {
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    max-width: 560px;
+}
+
+.data-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.data-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.data-form textarea {
+    resize: vertical;
+    min-height: 80px;
+}
+
+/* ============================================================
+   Таймер обновления попыток
+   ============================================================ */
+#refresh-timer {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+#countdown {
+    font-weight: 600;
+    color: var(--primary);
+}
+
+/* ============================================================
+   Адаптив
+   ============================================================ */
+@media (max-width: 640px) {
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    .form-grid  { grid-template-columns: 1fr; }
+    .nav a      { padding: 6px 8px; font-size: 12px; }
+    .panel      { padding: 16px; }
+}
+
+/* ============================================================
+   Утилиты
+   ============================================================ */
+.text-muted { color: var(--text-muted); }

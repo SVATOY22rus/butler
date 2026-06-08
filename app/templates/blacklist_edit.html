@@ -1,12 +1,13 @@
 {% extends 'base.html' %}
+{% block title %}Редактирование — Чёрный список — Дворецкий{% endblock %}
 
 {% block content %}
-<section class="page-header">
-    <h1>Редактирование записи чёрного списка</h1>
-    <p>Исправьте IP-адрес, причину или комментарий.</p>
-</section>
+<div class="page-header">
+    <h1>Редактирование записи</h1>
+    <p>Чёрный список — исправьте IP-адрес, причину или комментарий.</p>
+</div>
 
-<section class="card">
+<div class="card">
     <form method="post" class="data-form">
         <label>
             IP-адрес
@@ -15,12 +16,12 @@
 
         <label>
             Причина
-            <input type="text" name="reason" value="{{ entry.reason }}">
+            <input type="text" name="reason" value="{{ entry.reason or '' }}">
         </label>
 
         <label>
             Комментарий
-            <textarea name="comment" rows="4">{{ entry.comment }}</textarea>
+            <textarea name="comment" rows="4">{{ entry.comment or '' }}</textarea>
         </label>
 
         <div class="form-actions">
@@ -28,5 +29,5 @@
             <a class="secondary-button" href="{{ url_for('main.blacklist') }}">Отмена</a>
         </div>
     </form>
-</section>
+</div>
 {% endblock %}
