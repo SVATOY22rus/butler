@@ -80,6 +80,7 @@ def build_nft_rules():
         tcp dport 22 accept
 
         ip saddr @web_whitelist_v4 tcp dport @web_ports accept
+        tcp dport @web_ports log prefix "BUTLER "
         tcp dport @web_ports drop"""
     else:
         # Режим blacklist: все проходят, кроме заблокированных; whitelist игнорируется
@@ -91,6 +92,7 @@ def build_nft_rules():
         # SSH не трогаем
         tcp dport 22 accept
 
+        ip saddr @web_blacklist_v4 tcp dport @web_ports log prefix "BUTLER "
         ip saddr @web_blacklist_v4 tcp dport @web_ports drop
         tcp dport @web_ports accept"""
 
