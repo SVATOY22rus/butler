@@ -65,7 +65,9 @@ done
 VISUDO_BIN="$(command -v visudo)"
 MKDIR_BIN="$(command -v mkdir)"
 INSTALL_BIN="$(command -v install)"
-TEST_BIN="$(command -v test)"
+# 'test' — встроенная команда bash, command -v может вернуть просто 'test' без пути
+TEST_BIN="$(command -v test 2>/dev/null || true)"
+[[ "$TEST_BIN" == /* ]] || TEST_BIN="/usr/bin/test"
 CAT_BIN="$(command -v cat)"
 NFT_BIN="$(command -v nft)"
 JOURNALCTL_BIN="$(command -v journalctl)"
