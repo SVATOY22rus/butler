@@ -42,11 +42,27 @@ def _collect_ipv4(rows):
     return result_v4, skipped_v6
 
 
+def _build_proto_rules(proto, set_name, mode):
+    """Сгенерировать строки правил цепочки для одного протокола (tcp или udp)."""
+    lines = []
+    if mode == 'whitelist':
+        lines.append(f'        ip saddr @web_whitelist_v4 {proto} dport @{set_name} accept')
+        lines.append(f'        {proto} dport @{set_name} log prefix "BUTLER "')
+        lines.append(f'        {proto} dport @{set_name} drop')
+    else:
+        lines.append(f'        ip saddr @web_blacklist_v4 {proto} dport @{set_name} log prefix "BUTLER "')
+        lines.append(f'        ip saddr @web_blacklist_v4 {proto} dport @{set_name} drop')
+        lines.append(f'        {proto} dport @{set_name} accept')
+    return '\n'.join(lines)
+
+
 def build_nft_rules():
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')  # 'whitelist' | 'blacklist'
 
-    services = db.execute('SELECT port, ports_raw FROM services ORDER BY port').fetchall()
+    services = db.execute(
+        'SELECT port, ports_raw, protocol FROM services ORDER BY port'
+    ).fetchall()
     whitelist_rows = db.execute(
         'SELECT ip_address FROM whitelist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
@@ -54,20 +70,26 @@ def build_nft_rules():
         'SELECT ip_address FROM blacklist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
 
-    # Собираем все порты из всех сервисов (учитывая мультипорт)
-    all_ports = set()
+    # Разбиваем порты по протоколу; 'both' идёт и в tcp, и в udp
+    tcp_ports: set = set()
+    udp_ports: set = set()
     for row in services:
+        proto = (row['protocol'] or 'tcp').lower().strip()
         ports_raw = row['ports_raw'] or str(row['port'])
-        expanded = parse_ports_raw(ports_raw)
-        if expanded:
-            all_ports.update(expanded)
-        else:
-            all_ports.add(row['port'])
-    ports = [str(p) for p in sorted(all_ports)]
+        expanded = parse_ports_raw(ports_raw) or [row['port']]
+        if proto in ('tcp', 'both'):
+            tcp_ports.update(expanded)
+        if proto in ('udp', 'both'):
+            udp_ports.update(expanded)
+
+    tcp_list = [str(p) for p in sorted(tcp_ports)]
+    udp_list = [str(p) for p in sorted(udp_ports)]
+
     whitelist_v4, wl_skipped = _collect_ipv4(whitelist_rows)
     blacklist_v4, bl_skipped = _collect_ipv4(blacklist_rows)
 
-    ports_text     = ', '.join(ports)        if ports        else ''
+    tcp_text       = ', '.join(tcp_list)    if tcp_list    else ''
+    udp_text       = ', '.join(udp_list)    if udp_list    else ''
     whitelist_text = ', '.join(whitelist_v4) if whitelist_v4 else ''
     blacklist_text = ', '.join(blacklist_v4) if blacklist_v4 else ''
 
@@ -76,38 +98,36 @@ def build_nft_rules():
     if all_skipped:
         skipped_comment = '    # IPv6 (не поддерживается в этом наборе): ' + ', '.join(all_skipped) + '\n'
 
-    if mode == 'whitelist':
-        # Разрешены только адреса из whitelist; blacklist игнорируется
-        chain_rules = f"""\
-        iif lo accept
-        ct state established,related accept
+    # Строим правила только для протоколов у которых есть порты
+    chain_parts = [
+        '        iif lo accept',
+        '        ct state established,related accept',
+        '',
+        f'        # Режим: {"только белый список" if mode == "whitelist" else "только чёрный список"}',
+        '        # SSH не трогаем',
+        '        tcp dport 22 accept',
+    ]
+    if tcp_list:
+        chain_parts.append('')
+        chain_parts.append('        # TCP-сервисы')
+        chain_parts.append(_build_proto_rules('tcp', 'web_tcp_ports', mode))
+    if udp_list:
+        chain_parts.append('')
+        chain_parts.append('        # UDP-сервисы')
+        chain_parts.append(_build_proto_rules('udp', 'web_udp_ports', mode))
 
-        # Режим: только белый список
-        # SSH не трогаем
-        tcp dport 22 accept
-
-        ip saddr @web_whitelist_v4 tcp dport @web_ports accept
-        tcp dport @web_ports log prefix "BUTLER "
-        tcp dport @web_ports drop"""
-    else:
-        # Режим blacklist: все проходят, кроме заблокированных; whitelist игнорируется
-        chain_rules = f"""\
-        iif lo accept
-        ct state established,related accept
-
-        # Режим: только чёрный список
-        # SSH не трогаем
-        tcp dport 22 accept
-
-        ip saddr @web_blacklist_v4 tcp dport @web_ports log prefix "BUTLER "
-        ip saddr @web_blacklist_v4 tcp dport @web_ports drop
-        tcp dport @web_ports accept"""
+    chain_rules = '\n'.join(chain_parts)
 
     rules = f"""# Режим Butler: {mode}
 {skipped_comment}table inet butler {{
-    set web_ports {{
+    set web_tcp_ports {{
         type inet_service
-        elements = {{ {ports_text} }}
+        elements = {{ {tcp_text} }}
+    }}
+
+    set web_udp_ports {{
+        type inet_service
+        elements = {{ {udp_text} }}
     }}
 
     set web_whitelist_v4 {{
@@ -246,7 +266,12 @@ def apply_firewall_rules():
 
 def build_empty_butler_rules():
     return """table inet butler {
-    set web_ports {
+    set web_tcp_ports {
+        type inet_service
+        elements = { }
+    }
+
+    set web_udp_ports {
         type inet_service
         elements = { }
     }

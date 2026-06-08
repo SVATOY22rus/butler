@@ -70,9 +70,10 @@ def test_build_rules_whitelist_mode(auth_client, app):
     assert mode == 'whitelist'
     assert '192.168.1.1' in rules
     assert 'web_whitelist_v4' in rules
-    # Blacklist IP не должен попасть в правила whitelist-режима
-    assert 'web_blacklist_v4' not in rules.split('set web_blacklist_v4')[0].split('chain')[0] \
-           or True  # set объявлен, но в chain не используется
+    # В whitelist-режиме chain содержит web_whitelist_v4, а не web_blacklist_v4
+    chain_section = rules.split('chain input')[1] if 'chain input' in rules else ''
+    assert 'web_whitelist_v4' in chain_section
+    assert 'web_blacklist_v4' not in chain_section
 
 
 def test_build_rules_blacklist_mode(auth_client, app):
@@ -134,7 +135,7 @@ def test_flags_interval_in_rules(auth_client, app):
         from app.routes import build_nft_rules
         rules, _, _ = build_nft_rules()
 
-    assert 'flags interval' in rules
+    assert rules.count('flags interval') >= 2  # web_whitelist_v4 и web_blacklist_v4
 
 
 def test_firewall_preview_endpoint(auth_client):
@@ -142,3 +143,68 @@ def test_firewall_preview_endpoint(auth_client):
     r = auth_client.get('/firewall')
     assert r.status_code == 200
     assert b'table' in r.data or b'butler' in r.data.lower()
+
+
+def test_udp_service_goes_to_udp_set(auth_client, app):
+    """UDP-сервис попадает в web_udp_ports, а не в web_tcp_ports."""
+    add_service(auth_client, 'DNS', '53')
+    # Обновим протокол напрямую в БД
+    with app.app_context():
+        from app.db import get_db
+        get_db().execute("UPDATE services SET protocol='udp' WHERE name='DNS'")
+        get_db().commit()
+        from app.routes import build_nft_rules
+        rules, _, _ = build_nft_rules()
+
+    # 53 должен быть в udp-части
+    udp_section = rules.split('set web_udp_ports')[1].split('}')[0]
+    tcp_section = rules.split('set web_tcp_ports')[1].split('}')[0]
+    assert '53' in udp_section
+    assert '53' not in tcp_section
+
+
+def test_tcp_service_not_in_udp_set(auth_client, app):
+    """TCP-сервис не попадает в web_udp_ports."""
+    add_service(auth_client, 'HTTP', '80')
+    with app.app_context():
+        from app.db import get_db
+        get_db().execute("UPDATE services SET protocol='tcp' WHERE name='HTTP'")
+        get_db().commit()
+        from app.routes import build_nft_rules
+        rules, _, _ = build_nft_rules()
+
+    udp_section = rules.split('set web_udp_ports')[1].split('}')[0]
+    assert '80' not in udp_section
+
+
+def test_both_protocol_appears_in_both_sets(auth_client, app):
+    """Протокол 'both' даёт порт и в TCP, и в UDP set."""
+    add_service(auth_client, 'BOTH', '1194')
+    with app.app_context():
+        from app.db import get_db
+        get_db().execute("UPDATE services SET protocol='both' WHERE name='BOTH'")
+        get_db().commit()
+        from app.routes import build_nft_rules
+        rules, _, _ = build_nft_rules()
+
+    tcp_section = rules.split('set web_tcp_ports')[1].split('}')[0]
+    udp_section = rules.split('set web_udp_ports')[1].split('}')[0]
+    assert '1194' in tcp_section
+    assert '1194' in udp_section
+
+
+def test_chain_uses_correct_proto_keyword(auth_client, app):
+    """В chain input tcp-правила используют 'tcp dport', udp-правила 'udp dport'."""
+    add_service(auth_client, 'WEB_T', '80')
+    add_service(auth_client, 'DNS_U', '53')
+    with app.app_context():
+        from app.db import get_db
+        get_db().execute("UPDATE services SET protocol='tcp' WHERE name='WEB_T'")
+        get_db().execute("UPDATE services SET protocol='udp' WHERE name='DNS_U'")
+        get_db().commit()
+        from app.routes import build_nft_rules
+        rules, _, _ = build_nft_rules()
+
+    chain = rules.split('chain input')[1]
+    assert 'tcp dport @web_tcp_ports' in chain
+    assert 'udp dport @web_udp_ports' in chain
