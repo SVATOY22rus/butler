@@ -3,43 +3,12 @@
 {% block content %}
 
 <section class="panel">
-    <h2>Импорт из лога nftables</h2>
-    <p>
-        Укажите источник событий. Парсер ищет строки с полями <code>SRC=</code> и <code>DPT=</code>
-        на портах из таблицы сервисов.
-    </p>
-    <form method="post" action="{{ url_for('main.import_attempts_from_log') }}" class="form-grid">
-        <label class="full-width">
-            Источник
-            <select name="log_source" onchange="toggleLogSource(this.value)"
-                    style="padding:10px 12px;border-radius:8px;border:1px solid #cbd5e1;font-size:16px;">
-                <option value="text">Вставить текст вручную</option>
-                <option value="file">Файл на сервере (путь)</option>
-                <option value="journal">journald (sudo journalctl -k)</option>
-            </select>
-        </label>
-        <div id="log_text_block" class="full-width">
-            <label>
-                Текст лога
-                <textarea name="log_text" rows="5"
-                    placeholder="Jun  5 10:23:01 host kernel: IN=eth0 SRC=1.2.3.4 DST=10.0.0.1 PROTO=TCP DPT=8011 ..."
-                    style="width:100%;padding:10px;border-radius:8px;border:1px solid #cbd5e1;font-size:13px;font-family:monospace;box-sizing:border-box;"></textarea>
-            </label>
-        </div>
-        <div id="log_file_block" class="full-width" style="display:none;">
-            <label>
-                Путь к файлу
-                <input type="text" name="log_path" placeholder="/var/log/kern.log">
-            </label>
-        </div>
-        <button type="submit">Импортировать</button>
-    </form>
-</section>
-
-<section class="panel">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
         <h2 style="margin:0;">Попытки подключений</h2>
-        <span class="stat-badge">Всего: {{ attempts|length }}</span>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <span class="stat-badge">Всего: {{ attempts|length }}</span>
+            <span id="refresh-timer" style="font-size:13px;color:#6b7280;">Обновление через <span id="countdown">30</span> сек</span>
+        </div>
     </div>
 
     {% if attempts %}
@@ -94,14 +63,22 @@
         </tbody>
     </table>
     {% else %}
-    <p style="color:#6b7280;margin-top:12px;">Записей пока нет. Импортируйте лог выше или дождитесь автосбора (каждые 5 мин).</p>
+    <p style="color:#6b7280;margin-top:12px;">Записей пока нет. Данные собираются автоматически каждые 5 минут.</p>
     {% endif %}
 </section>
 
 <script>
-function toggleLogSource(val) {
-    document.getElementById('log_text_block').style.display = val === 'text' ? '' : 'none';
-    document.getElementById('log_file_block').style.display = val === 'file' ? '' : 'none';
-}
+(function() {
+    var seconds = 30;
+    var el = document.getElementById('countdown');
+    var interval = setInterval(function() {
+        seconds--;
+        if (el) el.textContent = seconds;
+        if (seconds <= 0) {
+            clearInterval(interval);
+            window.location.reload();
+        }
+    }, 1000);
+})();
 </script>
 {% endblock %}

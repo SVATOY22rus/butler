@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 from .auth import check_auth, login_required
-from .db import get_db, get_setting, set_setting
+from .db import get_db, get_setting, set_setting, parse_ports_raw
 
 bp = Blueprint('main', __name__)
 
@@ -39,7 +39,7 @@ def build_nft_rules():
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')  # 'whitelist' | 'blacklist'
 
-    services = db.execute('SELECT port FROM services ORDER BY port').fetchall()
+    services = db.execute('SELECT port, ports_raw FROM services ORDER BY port').fetchall()
     whitelist_rows = db.execute(
         'SELECT ip_address FROM whitelist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
@@ -47,7 +47,16 @@ def build_nft_rules():
         'SELECT ip_address FROM blacklist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
 
-    ports = [str(row['port']) for row in services]
+    # Собираем все порты из всех сервисов (учитывая мультипорт)
+    all_ports = set()
+    for row in services:
+        ports_raw = row['ports_raw'] or str(row['port'])
+        expanded = parse_ports_raw(ports_raw)
+        if expanded:
+            all_ports.update(expanded)
+        else:
+            all_ports.add(row['port'])
+    ports = [str(p) for p in sorted(all_ports)]
     whitelist_v4, wl_skipped = _collect_ipv4(whitelist_rows)
     blacklist_v4, bl_skipped = _collect_ipv4(blacklist_rows)
 
@@ -317,45 +326,45 @@ def services():
 
     if request.method == 'POST':
         name = request.form['name'].strip()
-        port_raw = request.form['port'].strip()
+        ports_raw = request.form['ports_raw'].strip()
         protocol = request.form['protocol'].strip() or 'tcp'
         description = request.form['description'].strip()
 
         error = None
+        port = None  # первый порт из списка (для UNIQUE)
+        parsed_ports = []
 
         if not name:
             error = 'Имя сервиса обязательно.'
-        elif not port_raw:
-            error = 'Порт обязателен.'
+        elif not ports_raw:
+            error = 'Укажите хотя бы один порт.'
         else:
-            try:
-                port = int(port_raw)
-                if port < 1 or port > 65535:
-                    error = 'Порт должен быть в диапазоне от 1 до 65535.'
-            except ValueError:
-                error = 'Порт должен быть числом.'
+            parsed_ports = parse_ports_raw(ports_raw)
+            if not parsed_ports:
+                error = 'Не удалось распознать порты. Примеры: 8080 или 80, 443 или 8000-8100'
+            else:
+                port = parsed_ports[0]  # первый порт — ключ UNIQUE
 
         if error is None:
             existing_service = db.execute(
                 'SELECT id FROM services WHERE port = ?',
                 (port,)
             ).fetchone()
-
             if existing_service is not None:
                 error = f'Порт {port} уже занят другим сервисом.'
 
         if error is None:
             try:
                 db.execute(
-                    'INSERT INTO services (name, port, protocol, description) VALUES (?, ?, ?, ?)',
-                    (name, port, protocol, description)
+                    'INSERT INTO services (name, port, ports_raw, protocol, description) VALUES (?, ?, ?, ?, ?)',
+                    (name, port, ports_raw, protocol, description)
                 )
                 db.execute(
                     'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
-                    ('create', 'service', f'{name}:{port}', 'Сервис добавлен через веб-форму')
+                    ('create', 'service', f'{name}:{ports_raw}', 'Сервис добавлен через веб-форму')
                 )
                 db.commit()
-                flash(f'Сервис "{name}" успешно добавлен.', 'success')
+                flash(f'Сервис "{name}" успешно добавлен ({len(parsed_ports)} портов).', 'success')
                 return redirect(url_for('main.services'))
             except sqlite3.IntegrityError:
                 flash(f'Не удалось добавить сервис: порт {port} уже существует.', 'error')
@@ -456,11 +465,12 @@ def import_attempts_from_log():
     else:
         log_text = request.form.get('log_text', '')
 
-    # Найдём все сервисы для сопоставления портов
-    services_by_port = {
-        row['port']: row['name']
-        for row in db.execute('SELECT port, name FROM services').fetchall()
-    }
+    # Найдём все сервисы для сопоставления портов (с учётом мультипорт)
+    services_by_port = {}
+    for row in db.execute('SELECT port, ports_raw, name FROM services').fetchall():
+        ports_raw_val = row['ports_raw'] or str(row['port'])
+        for p in parse_ports_raw(ports_raw_val) or [row['port']]:
+            services_by_port[p] = row['name']
 
     added = 0
     for line in log_text.splitlines():
@@ -961,19 +971,26 @@ def conntrack_drop_ports():
     drop_all = request.form.get('drop_all') == '1'
 
     if drop_all:
-        rows = db.execute('SELECT port, protocol FROM services').fetchall()
-        ports = [(r['port'], r['protocol']) for r in rows]
+        rows = db.execute('SELECT port, ports_raw, protocol FROM services').fetchall()
     else:
         raw = request.form.getlist('port')
         if raw:
             placeholders = ','.join(['?'] * len(raw))
             rows = db.execute(
-                f'SELECT port, protocol FROM services WHERE port IN ({placeholders})',
+                f'SELECT port, ports_raw, protocol FROM services WHERE port IN ({placeholders})',
                 raw
             ).fetchall()
         else:
             rows = []
-        ports = [(r['port'], r['protocol']) for r in rows]
+
+    # Разворачиваем все порты включая мультипорт
+    ports = []
+    for r in rows:
+        proto = r['protocol'] or 'tcp'
+        ports_raw_val = r['ports_raw'] or str(r['port'])
+        expanded = parse_ports_raw(ports_raw_val) or [r['port']]
+        for p in expanded:
+            ports.append((p, proto))
 
     if not ports:
         flash('Не выбран ни один порт.', 'error')

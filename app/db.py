@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS services (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     port INTEGER NOT NULL UNIQUE,
+    ports_raw TEXT NOT NULL DEFAULT '',
     protocol TEXT NOT NULL DEFAULT 'tcp',
     description TEXT,
     is_enabled INTEGER NOT NULL DEFAULT 1,
@@ -57,6 +58,43 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
+
+
+def parse_ports_raw(ports_raw):
+    """
+    Разобрать строку портов вида "80, 443, 8000-8100" в список целых чисел.
+    Поддерживает: одиночные порты через запятую, диапазоны через дефис, смесь.
+    Возвращает отсортированный список уникальных портов.
+    """
+    result = set()
+    if not ports_raw:
+        return []
+    for part in ports_raw.replace(' ', '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            try:
+                start, end = part.split('-', 1)
+                result.update(range(int(start), int(end) + 1))
+            except ValueError:
+                pass
+        else:
+            try:
+                result.add(int(part))
+            except ValueError:
+                pass
+    return sorted(p for p in result if 1 <= p <= 65535)
+
+
+def migrate_db(db):
+    """Применить миграции к существующей БД (добавить отсутствующие колонки)."""
+    cols = {row[1] for row in db.execute("PRAGMA table_info(services)").fetchall()}
+    if 'ports_raw' not in cols:
+        db.execute("ALTER TABLE services ADD COLUMN ports_raw TEXT NOT NULL DEFAULT ''")
+        # Заполнить ports_raw из существующего port
+        db.execute("UPDATE services SET ports_raw = CAST(port AS TEXT) WHERE ports_raw = ''")
+        db.commit()
 
 
 def get_db():
@@ -144,6 +182,14 @@ def seed_demo_data():
 
 def init_app(app):
     app.teardown_appcontext(close_db)
+
+    # Автомиграция при старте приложения
+    with app.app_context():
+        try:
+            db = get_db()
+            migrate_db(db)
+        except Exception:
+            pass  # БД ещё не создана — init-db создаст её
 
     @app.cli.command('init-db')
     def init_db_command():

@@ -4,15 +4,16 @@
 
 <section class="panel">
     <h2>Сервисы</h2>
-    <p>Список сервисов, работающих на сервере на отдельных портах.</p>
+    <p>Список сервисов, работающих на сервере. Можно указать несколько портов через запятую или диапазон.</p>
     <form method="post" class="form-grid">
         <label>
             Имя сервиса
             <input type="text" name="name" placeholder="Например CRM" required>
         </label>
         <label>
-            Порт
-            <input type="number" name="port" placeholder="8011" required>
+            Порты
+            <input type="text" name="ports_raw" placeholder="8011 или 80, 443 или 8000-8100" required>
+            <small style="color:#6b7280;font-size:12px;">Один порт, несколько через запятую или диапазон через дефис</small>
         </label>
         <label>
             Протокол
@@ -42,7 +43,7 @@
                     <th style="width:40px;"><input type="checkbox" id="check-all-ports" onchange="selectAllPorts(this.checked)"></th>
                     <th>ID</th>
                     <th>Имя</th>
-                    <th>Порт</th>
+                    <th>Порты</th>
                     <th>Протокол</th>
                     <th>Описание</th>
                     <th>Действия</th>
@@ -54,7 +55,10 @@
                     <td><input type="checkbox" name="port" value="{{ item.port }}" class="port-check"></td>
                     <td>{{ item.id }}</td>
                     <td>{{ item.name }}</td>
-                    <td><code>{{ item.port }}</code></td>
+                    <td>
+                        {% set pr = item.ports_raw if item.ports_raw else item.port|string %}
+                        <code>{{ pr }}</code>
+                    </td>
                     <td>{{ item.protocol }}</td>
                     <td>{{ item.description }}</td>
                     <td>

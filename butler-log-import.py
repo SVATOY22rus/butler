@@ -115,11 +115,28 @@ def run(db_path: str, state_path: Path, max_lines: int):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
 
-    # Загрузим порты сервисов для фильтрации
-    known_ports = {
-        row['port']: row['name']
-        for row in con.execute('SELECT port, name FROM services').fetchall()
-    }
+    # Загрузим порты сервисов для фильтрации (с учётом мультипорт)
+    known_ports = {}
+    for row in con.execute('SELECT port, ports_raw, name FROM services').fetchall():
+        ports_raw_val = (row['ports_raw'] or '').strip() or str(row['port'])
+        # Разобрать порты вручную (без импорта app)
+        port_nums = set()
+        for part in ports_raw_val.replace(' ', '').split(','):
+            if '-' in part:
+                try:
+                    s, e = part.split('-', 1)
+                    port_nums.update(range(int(s), int(e) + 1))
+                except ValueError:
+                    pass
+            else:
+                try:
+                    port_nums.add(int(part))
+                except ValueError:
+                    pass
+        if not port_nums:
+            port_nums.add(row['port'])
+        for p in port_nums:
+            known_ports[p] = row['name']
 
     added = updated = skipped = 0
 
