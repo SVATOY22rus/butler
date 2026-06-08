@@ -168,13 +168,14 @@ User=${BUTLER_USER}
 Group=${BUTLER_USER}
 WorkingDirectory=${INNER_DIR}
 EnvironmentFile=${ENV_FILE}
+Environment=BUTLER_ENV_FILE=${ENV_FILE}
 ExecStart=${VENV_DIR}/bin/gunicorn --workers 2 --bind 0.0.0.0:${BUTLER_PORT} wsgi:app
 Restart=always
 RestartSec=3
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-target.target
+WantedBy=multi-user.target
 UNIT
 
 sudo systemctl daemon-reload
