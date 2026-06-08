@@ -16,7 +16,11 @@
         </label>
         <label>
             Протокол
-            <input type="text" name="protocol" value="tcp">
+            <select name="protocol">
+                <option value="tcp" selected>TCP</option>
+                <option value="udp">UDP</option>
+                <option value="both">TCP + UDP</option>
+            </select>
         </label>
         <label class="full-width">
             Описание
@@ -61,7 +65,13 @@
                             {% set pr = item.ports_raw if item.ports_raw else item.port|string %}
                             <code>{{ pr }}</code>
                         </td>
-                        <td>{{ item.protocol }}</td>
+                        <td>
+                            {% if item.protocol == 'both' %}
+                                <span title="TCP + UDP">TCP+UDP</span>
+                            {% else %}
+                                {{ item.protocol | upper }}
+                            {% endif %}
+                        </td>
                         <td>{{ item.description or '—' }}</td>
                         <td class="actions-cell">
                             <form method="post" action="{{ url_for('main.delete_service', service_id=item.id) }}">
