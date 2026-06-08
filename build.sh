@@ -1,39 +1,60 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build.sh — упаковка Butler для деплоя без git и без интернета
+# build.sh — сборка дистрибутива Butler для деплоя без git и без интернета
 #
 # Запуск из корня проекта:
 #   ./build.sh
-#   ./build.sh --python-version 3.11 --abi cp311
-#   ./build.sh --output /tmp/myserver.tar.gz
-#   ./build.sh --no-wheels   # без скачивания wheels (если уже есть)
+#   ./build.sh --python-version 3.12 --abi cp312   # для конкретного сервера
+#   ./build.sh --output /tmp/butler.tar.gz
+#   ./build.sh --no-wheels                          # если wheels уже скачаны
 #
-# Результат: butler-deploy-YYYYMMDD-HHMMSS.tar.gz рядом с проектом
+# Результат: butler-YYYYMMDD-HHMMSS.tar.gz
+#
+# Структура архива:
+#   butler/
+#   ├── butler.env.example   ← переименовать в butler.env и настроить
+#   ├── butler               ← тестовый запуск
+#   ├── install.sh           ← установка службы
+#   ├── sudoers.sh           ← настройка sudoers
+#   └── .butler/             ← подкапотное (не трогать)
+#       ├── app/
+#       ├── wheels/
+#       ├── wsgi.py
+#       ├── requirements.txt
+#       ├── butler-log-import.py
+#       ├── butler-log-import.service
+#       ├── butler-log-import.timer
+#       └── env.example
+#
+# Деплой на сервер:
+#   scp butler-*.tar.gz user@server:~/serv/
+#   ssh user@server
+#   cd ~/serv && tar -xzf butler-*.tar.gz
+#   cd butler
+#   nano butler.env          # поправить пароль
+#   ./install.sh
+#   ./sudoers.sh
 # =============================================================================
 
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Дефолтные параметры
+# Параметры
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$SCRIPT_DIR"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-OUTPUT_NAME="butler-deploy-${TIMESTAMP}.tar.gz"
-OUTPUT_DIR="$(dirname "$PROJECT_DIR")"
-
+OUTPUT_NAME="butler-${TIMESTAMP}.tar.gz"
+OUTPUT_DIR="$(dirname "$SCRIPT_DIR")"
 PLATFORM="linux_x86_64"
 SKIP_WHEELS=0
 
-# Автоопределение Python: предпочитаем venv проекта, потом python3, потом python
+# Автоопределение Python
 _find_python() {
   local VENV_PY="${SCRIPT_DIR}/.venv/bin/python3"
   if [[ -x "$VENV_PY" ]]; then
     echo "$VENV_PY"
-  elif command -v python3 &>/dev/null && python3 -m pip --version &>/dev/null 2>&1; then
+  elif command -v python3 &>/dev/null; then
     echo "python3"
-  elif command -v python &>/dev/null && python -m pip --version &>/dev/null 2>&1; then
-    echo "python"
   else
     echo ""
   fi
@@ -41,89 +62,62 @@ _find_python() {
 
 PYTHON_BIN="${PYTHON_BIN:-$(_find_python)}"
 
-if [[ -z "$PYTHON_BIN" ]]; then
-  die "Не найден Python с pip. Укажи вручную: ./build.sh --python /path/to/python3"
-fi
-
-# Автоопределение версии Python
-PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
-ABI="cp$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')"
-
 # ---------------------------------------------------------------------------
 # Разбор аргументов
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --python-version)
-      PYTHON_VERSION="$2"; shift 2 ;;
-    --abi)
-      ABI="$2"; shift 2 ;;
-    --platform)
-      PLATFORM="$2"; shift 2 ;;
-    --output)
-      OUTPUT_DIR="$(dirname "$2")"
-      OUTPUT_NAME="$(basename "$2")"
-      shift 2 ;;
-    --no-wheels)
-      SKIP_WHEELS=1; shift ;;
-    --python)
-      PYTHON_BIN="$2"; shift 2 ;;
+    --python-version) PYTHON_VERSION="$2"; shift 2 ;;
+    --abi)            ABI="$2"; shift 2 ;;
+    --platform)       PLATFORM="$2"; shift 2 ;;
+    --output)         OUTPUT_DIR="$(dirname "$2")"; OUTPUT_NAME="$(basename "$2")"; shift 2 ;;
+    --no-wheels)      SKIP_WHEELS=1; shift ;;
+    --python)         PYTHON_BIN="$2"; shift 2 ;;
     -h|--help)
-      echo "Использование: $0 [OPTIONS]"
-      echo ""
-      echo "  --python-version VER   Версия Python на сервере (по умолчанию: $PYTHON_VERSION)"
-      echo "  --abi ABI              ABI тег (по умолчанию: $ABI)"
-      echo "  --platform PLAT        Платформа (по умолчанию: $PLATFORM)"
-      echo "  --output PATH          Путь к выходному архиву"
-      echo "  --no-wheels            Пропустить скачивание wheels"
-      echo "  --python BIN           Путь к python (по умолчанию: python3)"
+      sed -n '3,30p' "$0" | sed 's/^# \?//'
       exit 0 ;;
-    *)
-      echo "Неизвестный аргумент: $1" >&2
-      exit 1 ;;
+    *) echo "Неизвестный аргумент: $1" >&2; exit 1 ;;
   esac
 done
 
+[[ -n "$PYTHON_BIN" ]] || { echo "[error] Python3 не найден." >&2; exit 1; }
+
+PYTHON_VERSION="${PYTHON_VERSION:-$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')}"
+ABI="${ABI:-cp$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}{sys.version_info.minor}")')}"
 OUTPUT_PATH="${OUTPUT_DIR}/${OUTPUT_NAME}"
 
 # ---------------------------------------------------------------------------
-# Утилиты вывода
+# Цвета
 # ---------------------------------------------------------------------------
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
-info()    { echo -e "${GREEN}[build]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[warn] ${NC} $*"; }
-error()   { echo -e "${RED}[error]${NC} $*" >&2; }
-die()     { error "$*"; exit 1; }
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
+info() { echo -e "    $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Предварительные проверки
+# Проверки
 # ---------------------------------------------------------------------------
-info "Python:   $("$PYTHON_BIN" --version 2>&1)"
-info "Версия:   $PYTHON_VERSION  |  ABI: $ABI  |  Платформа: $PLATFORM"
-info "Архив:    $OUTPUT_PATH"
+[[ -f "${SCRIPT_DIR}/requirements.txt" ]] || die "requirements.txt не найден."
+[[ -f "${SCRIPT_DIR}/wsgi.py" ]]          || die "wsgi.py не найден."
+[[ -f "${SCRIPT_DIR}/install.sh" ]]       || die "install.sh не найден."
+
+echo ""
+echo "Butler — сборка дистрибутива"
+echo "  Python:    $("$PYTHON_BIN" --version 2>&1)"
+echo "  Версия:    ${PYTHON_VERSION}  |  ABI: ${ABI}  |  Платформа: ${PLATFORM}"
+echo "  Архив:     ${OUTPUT_PATH}"
 echo ""
 
-[[ -f "${PROJECT_DIR}/requirements.txt" ]] \
-  || die "requirements.txt не найден. Запусти скрипт из корня проекта."
-
-[[ -f "${PROJECT_DIR}/wsgi.py" ]] \
-  || die "wsgi.py не найден. Это не корень проекта Butler."
-
 # ---------------------------------------------------------------------------
-# Шаг 1 — скачать wheels
+# Шаг 1 — wheels
 # ---------------------------------------------------------------------------
-WHEELS_DIR="${PROJECT_DIR}/wheels"
+WHEELS_DIR="${SCRIPT_DIR}/wheels"
 
 if [[ $SKIP_WHEELS -eq 0 ]]; then
-  info "Скачиваю wheels для Python ${PYTHON_VERSION} / ${ABI} / ${PLATFORM}..."
-  rm -rf "$WHEELS_DIR"
-  mkdir -p "$WHEELS_DIR"
+  echo "Скачиваю wheels..."
+  rm -rf "$WHEELS_DIR" && mkdir -p "$WHEELS_DIR"
 
-  # Сначала пробуем только бинарные wheels (быстро, без компилятора на сервере)
   if "$PYTHON_BIN" -m pip download \
       --dest "$WHEELS_DIR" \
       --platform "$PLATFORM" \
@@ -131,79 +125,92 @@ if [[ $SKIP_WHEELS -eq 0 ]]; then
       --implementation cp \
       --abi "$ABI" \
       --only-binary=:all: \
-      -r "${PROJECT_DIR}/requirements.txt" \
-      --quiet; then
-    info "Бинарные wheels скачаны успешно."
+      -r "${SCRIPT_DIR}/requirements.txt" \
+      --quiet 2>&1; then
+    ok "Wheels скачаны: $(ls "$WHEELS_DIR" | wc -l) файлов."
   else
-    warn "Не все пакеты имеют бинарные wheels — скачиваю sdist тоже..."
+    warn "Не все бинарные wheels найдены — пробую с sdist..."
     rm -rf "$WHEELS_DIR" && mkdir -p "$WHEELS_DIR"
     "$PYTHON_BIN" -m pip download \
       --dest "$WHEELS_DIR" \
-      -r "${PROJECT_DIR}/requirements.txt" \
+      -r "${SCRIPT_DIR}/requirements.txt" \
       --quiet
-    warn "Часть пакетов — sdist. На сервере потребуется компилятор (gcc, python3-dev)."
+    warn "Часть пакетов — sdist. На сервере нужен компилятор (gcc, python3-dev)."
+    ok "Wheels скачаны: $(ls "$WHEELS_DIR" | wc -l) файлов."
   fi
-
-  WHEELS_COUNT="$(ls "$WHEELS_DIR" | wc -l)"
-  info "Скачано файлов: ${WHEELS_COUNT}"
 else
   warn "--no-wheels: пропускаю скачивание."
-  if [[ ! -d "$WHEELS_DIR" ]] || [[ -z "$(ls -A "$WHEELS_DIR" 2>/dev/null)" ]]; then
-    warn "Папка wheels/ пуста или отсутствует — установка на сервере потребует интернет."
-  fi
 fi
 
 # ---------------------------------------------------------------------------
-# Шаг 2 — собрать архив
+# Шаг 2 — сборка во временную директорию
 # ---------------------------------------------------------------------------
-info "Собираю архив..."
+echo "Собираю архив..."
 
-PARENT_DIR="$(dirname "$PROJECT_DIR")"
-BASE_NAME="$(basename "$PROJECT_DIR")"
+BUILD_TMP="$(mktemp -d)"
+trap 'rm -rf "$BUILD_TMP"' EXIT
 
-tar -czf "$OUTPUT_PATH" \
-  -C "$PARENT_DIR" \
-  --exclude="${BASE_NAME}/.git" \
-  --exclude="${BASE_NAME}/.venv" \
-  --exclude="${BASE_NAME}/instance" \
-  --exclude="${BASE_NAME}/generated" \
-  --exclude="${BASE_NAME}/__pycache__" \
-  --exclude="${BASE_NAME}/app/__pycache__" \
-  --exclude="${BASE_NAME}/.env" \
-  --exclude="${BASE_NAME}/*.pyc" \
-  --exclude="${BASE_NAME}/.mypy_cache" \
-  --exclude="${BASE_NAME}/butler-deploy-*.tar.gz" \
-  "$BASE_NAME"
+DIST_DIR="${BUILD_TMP}/butler"
+INNER_DIR="${DIST_DIR}/.butler"
+
+mkdir -p "$INNER_DIR"
+
+# Скрипты в корне папки butler/
+install -m 755 "${SCRIPT_DIR}/install.sh"  "${DIST_DIR}/install.sh"
+install -m 755 "${SCRIPT_DIR}/sudoers.sh"  "${DIST_DIR}/sudoers.sh"
+install -m 755 "${SCRIPT_DIR}/butler"      "${DIST_DIR}/butler"
+install -m 644 "${SCRIPT_DIR}/env.example" "${DIST_DIR}/butler.env.example"
+
+# Всё остальное — в .butler/
+cp -r "${SCRIPT_DIR}/app"                              "${INNER_DIR}/app"
+cp    "${SCRIPT_DIR}/wsgi.py"                          "${INNER_DIR}/wsgi.py"
+cp    "${SCRIPT_DIR}/requirements.txt"                 "${INNER_DIR}/requirements.txt"
+cp    "${SCRIPT_DIR}/env.example"                      "${INNER_DIR}/env.example"
+cp    "${SCRIPT_DIR}/butler-log-import.py"             "${INNER_DIR}/butler-log-import.py"
+cp    "${SCRIPT_DIR}/butler-log-import.service"        "${INNER_DIR}/butler-log-import.service"
+cp    "${SCRIPT_DIR}/butler-log-import.timer"          "${INNER_DIR}/butler-log-import.timer"
+cp -r "${WHEELS_DIR}"                                  "${INNER_DIR}/wheels"
+
+# Убираем кэш python
+find "${INNER_DIR}/app" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "${INNER_DIR}/app" -name "*.pyc" -delete 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Шаг 3 — упаковка
+# ---------------------------------------------------------------------------
+tar -czf "$OUTPUT_PATH" -C "$BUILD_TMP" butler
 
 ARCHIVE_SIZE="$(du -sh "$OUTPUT_PATH" | cut -f1)"
-info "Архив готов: ${OUTPUT_PATH} (${ARCHIVE_SIZE})"
+ok "Архив готов: ${OUTPUT_PATH} (${ARCHIVE_SIZE})"
 
 # ---------------------------------------------------------------------------
-# Шаг 3 — проверка содержимого
+# Шаг 4 — проверка содержимого
 # ---------------------------------------------------------------------------
 echo ""
-info "Содержимое архива:"
+echo "Содержимое:"
 tar -tzf "$OUTPUT_PATH" | grep -v '__pycache__' | sort
 
-# Читаем список файлов один раз
 TAR_LIST="$(tar -tzf "$OUTPUT_PATH")"
 
-# Обязательные файлы
+echo ""
+echo "Проверка обязательных файлов:"
 REQUIRED=(
-  "${BASE_NAME}/wsgi.py"
-  "${BASE_NAME}/requirements.txt"
-  "${BASE_NAME}/butler.service"
-  "${BASE_NAME}/butler-log-import.service"
-  "${BASE_NAME}/butler-log-import.timer"
-  "${BASE_NAME}/install_butler_sudoers.sh"
-  "${BASE_NAME}/env.example"
+  "butler/install.sh"
+  "butler/sudoers.sh"
+  "butler/butler"
+  "butler/butler.env.example"
+  "butler/.butler/wsgi.py"
+  "butler/.butler/requirements.txt"
+  "butler/.butler/app/"
+  "butler/.butler/wheels/"
+  "butler/.butler/butler-log-import.py"
+  "butler/.butler/butler-log-import.service"
+  "butler/.butler/butler-log-import.timer"
 )
 
-echo ""
-info "Проверка обязательных файлов:"
 ALL_OK=1
 for F in "${REQUIRED[@]}"; do
-  if echo "$TAR_LIST" | grep -qE "^${F}/?$"; then
+  if echo "$TAR_LIST" | grep -qE "^${F}"; then
     echo -e "  ${GREEN}✓${NC}  $F"
   else
     echo -e "  ${RED}✗${NC}  $F  — ОТСУТСТВУЕТ"
@@ -211,28 +218,20 @@ for F in "${REQUIRED[@]}"; do
   fi
 done
 
-# Проверяем что нет лишнего
-echo ""
-info "Проверка что лишнего нет:"
-for EXCL in ".git" ".venv" "instance" "generated"; do
-  if echo "$TAR_LIST" | grep -q "/${EXCL}/"; then
-    echo -e "  ${RED}✗${NC}  Найдено: ${EXCL}/  — нужно проверить исключения"
-    ALL_OK=0
-  else
-    echo -e "  ${GREEN}✓${NC}  ${EXCL}/ не включён"
-  fi
-done
-
 echo ""
 if [[ $ALL_OK -eq 1 ]]; then
-  info "Всё готово. Архив можно деплоить."
+  ok "Готово к деплою."
   echo ""
   echo "  Перенести на сервер:"
-  echo "    scp ${OUTPUT_PATH} user@server:/tmp/"
+  echo "    scp ${OUTPUT_PATH} user@server:~/serv/"
   echo ""
   echo "  На сервере:"
-  echo "    tar -xzf /tmp/${OUTPUT_NAME}"
-  echo "    см. DEPLOY.md"
+  echo "    cd ~/serv && tar -xzf ${OUTPUT_NAME}"
+  echo "    cd butler"
+  echo "    cp butler.env.example butler.env && nano butler.env"
+  echo "    ./install.sh"
+  echo "    ./sudoers.sh"
 else
-  warn "Есть предупреждения — проверь архив перед деплоем."
+  warn "Есть проблемы — проверь архив."
 fi
+echo ""

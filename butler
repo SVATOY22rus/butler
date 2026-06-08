@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# =============================================================================
+# butler — тестовый запуск Butler прямо в терминале (без systemd)
+#
+# Использование:
+#   ./butler
+#   ./butler --port 8080
+#
+# Ctrl+C — остановить.
+# Для production-запуска используй: ./install.sh
+# =============================================================================
+
+set -euo pipefail
+
+BUTLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INNER_DIR="${BUTLER_DIR}/.butler"
+VENV_DIR="${BUTLER_DIR}/.butler/.venv"
+ENV_FILE="${BUTLER_DIR}/butler.env"
+GUNICORN="${VENV_DIR}/bin/gunicorn"
+
+PORT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) PORT="$2"; shift 2 ;;
+    -h|--help)
+      echo "Использование: $0 [--port PORT]"
+      echo "Запускает Butler в терминале для проверки. Ctrl+C — остановить."
+      exit 0 ;;
+    *) echo "Неизвестный аргумент: $1" >&2; exit 1 ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Проверки
+# ---------------------------------------------------------------------------
+if [[ ! -f "$GUNICORN" ]]; then
+  echo "[!] venv не найден. Сначала запусти: ./install.sh"
+  echo "    Или установи окружение вручную."
+  exit 1
+fi
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "[!] butler.env не найден рядом со скриптом."
+  echo "    Скопируй шаблон: cp .butler/env.example butler.env"
+  exit 1
+fi
+
+# Читаем порт из конфига если не задан
+if [[ -z "$PORT" ]]; then
+  PORT="$(grep -m1 '^BUTLER_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
+  PORT="${PORT:-5050}"
+fi
+
+# ---------------------------------------------------------------------------
+# Запуск
+# ---------------------------------------------------------------------------
+echo ""
+echo "  Butler — тестовый запуск"
+echo "  Адрес:  http://127.0.0.1:${PORT}"
+echo "  Конфиг: ${ENV_FILE}"
+echo "  Ctrl+C  — остановить"
+echo ""
+
+# Загружаем переменные из butler.env
+set -a
+# shellcheck source=/dev/null
+source "$ENV_FILE"
+set +a
+
+cd "$INNER_DIR"
+
+exec "$GUNICORN" \
+  --workers 1 \
+  --bind "0.0.0.0:${PORT}" \
+  --log-level info \
+  wsgi:app

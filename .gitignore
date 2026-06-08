@@ -1,53 +1,34 @@
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+.mypy_cache/
+.ruff_cache/
 
-# Virtual environments
+# Виртуальное окружение
 .venv/
 venv/
 env/
-ENV/
-.env
-.env.*
-!.env.example
 
-# Flask / local app data
+# Данные приложения (не хранить в git)
 instance/
-
-# Environment files / secrets
-.env
-.env.*
-*.env
-
-# Local databases
+generated/
 *.db
 *.sqlite
 *.sqlite3
 
-# Test / coverage / tooling
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.mypy_cache/
-.ruff_cache/
+# Конфиг с паролями
+butler.env
+.env
+*.env
+!env.example
 
-# Build artifacts
-build/
-dist/
-*.egg-info/
+# Артефакты сборки
+wheels/
+butler-*.tar.gz
 
-# IDE / editor
+# IDE / OS
 .vscode/
 .idea/
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# Logs
 *.log
-
-# Generated firewall files
-generated/
