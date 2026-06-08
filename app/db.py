@@ -183,13 +183,16 @@ def seed_demo_data():
 def init_app(app):
     app.teardown_appcontext(close_db)
 
-    # Автомиграция при старте приложения
+    # Автосоздание и миграция БД при старте приложения
     with app.app_context():
-        try:
-            db = get_db()
-            migrate_db(db)
-        except Exception:
-            pass  # БД ещё не создана — init-db создаст её
+        db = get_db()
+        # Создаём все таблицы если их нет (безопасно — IF NOT EXISTS)
+        db.executescript(SCHEMA_SQL)
+        db.commit()
+        # Применяем миграции (новые колонки и т.д.)
+        migrate_db(db)
+        # Засеваем начальные данные если БД пустая
+        seed_demo_data()
 
     @app.cli.command('init-db')
     def init_db_command():
