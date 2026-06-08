@@ -13,25 +13,32 @@ bp = Blueprint('main', __name__)
 
 
 def validate_ip_address(value):
+    """Принимает одиночный IP или CIDR-подсеть. Возвращает нормализованную строку или None."""
     try:
-        return str(ipaddress.ip_address(value))
+        net = ipaddress.ip_network(value, strict=False)
+        return str(net)
     except ValueError:
         return None
 
 
 def _collect_ipv4(rows):
-    """Вернуть список IPv4-адресов из строк БД. IPv6 пропускать явно."""
+    """Вернуть список IPv4-адресов/подсетей из строк БД. IPv6 пропускать явно."""
     result_v4 = []
     skipped_v6 = []
     for row in rows:
+        raw = row['ip_address'].strip()
         try:
-            ip_obj = ipaddress.ip_address(row['ip_address'])
-            if ip_obj.version == 4:
-                result_v4.append(str(ip_obj))
+            net = ipaddress.ip_network(raw, strict=False)
+            if net.version == 4:
+                # Одиночный хост (/32) — без маски для читаемости
+                if net.prefixlen == 32:
+                    result_v4.append(str(net.network_address))
+                else:
+                    result_v4.append(str(net))
             else:
-                skipped_v6.append(str(ip_obj))
+                skipped_v6.append(raw)
         except ValueError:
-            continue
+            skipped_v6.append(raw)
     return result_v4, skipped_v6
 
 
@@ -105,11 +112,13 @@ def build_nft_rules():
 
     set web_whitelist_v4 {{
         type ipv4_addr
+        flags interval
         elements = {{ {whitelist_text} }}
     }}
 
     set web_blacklist_v4 {{
         type ipv4_addr
+        flags interval
         elements = {{ {blacklist_text} }}
     }}
 
@@ -244,11 +253,13 @@ def build_empty_butler_rules():
 
     set web_whitelist_v4 {
         type ipv4_addr
+        flags interval
         elements = { }
     }
 
     set web_blacklist_v4 {
         type ipv4_addr
+        flags interval
         elements = { }
     }
 
