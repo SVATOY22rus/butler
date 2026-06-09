@@ -41,6 +41,7 @@
         </div>
     </div>
 
+    {# Основная форма — только для сброса conntrack по портам #}
     <form method="post" action="{{ url_for('main.conntrack_drop_ports') }}" id="ports-form">
         <div class="table-wrap">
             <table>
@@ -74,10 +75,15 @@
                         </td>
                         <td>{{ item.description or '—' }}</td>
                         <td class="actions-cell">
-                            <form method="post" action="{{ url_for('main.delete_service', service_id=item.id) }}">
-                                <button type="submit" class="danger-button"
-                                        onclick="return confirm('Удалить сервис {{ item.name }}?')">Удалить</button>
-                            </form>
+                            {# Кнопки вне формы портов — используем отдельные формы через JS #}
+                            <a class="secondary-button"
+                               href="{{ url_for('main.edit_service', service_id=item.id) }}">
+                                Изменить
+                            </a>
+                            <button type="button" class="danger-button"
+                                    onclick="deleteService({{ item.id }}, '{{ item.name | e }}')">
+                                Удалить
+                            </button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -98,10 +104,24 @@
     </form>
 </section>
 
+{# Скрытые формы удаления — по одной на каждый сервис, вне основной формы #}
+{% for item in services %}
+<form id="delete-service-{{ item.id }}"
+      method="post"
+      action="{{ url_for('main.delete_service', service_id=item.id) }}"
+      style="display:none;">
+</form>
+{% endfor %}
+
 <script>
 function selectAllPorts(checked) {
     document.querySelectorAll('.port-check').forEach(cb => cb.checked = checked);
     document.getElementById('check-all-ports').checked = checked;
+}
+
+function deleteService(id, name) {
+    if (!confirm('Удалить сервис "' + name + '"?')) return;
+    document.getElementById('delete-service-' + id).submit();
 }
 </script>
 {% endblock %}

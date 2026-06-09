@@ -118,29 +118,30 @@ def build_nft_rules():
 
     chain_rules = '\n'.join(chain_parts)
 
+    def _set_block(name, type_, extra, elements):
+        """Сгенерировать объявление set. elements пустой → блок elements опускается."""
+        lines = [f'    set {name} {{', f'        type {type_}']
+        if extra:
+            lines.append(f'        {extra}')
+        if elements:
+            lines.append(f'        elements = {{ {elements} }}')
+        lines.append('    }')
+        return '\n'.join(lines)
+
+    set_tcp  = _set_block('web_tcp_ports',    'inet_service', '',              tcp_text)
+    set_udp  = _set_block('web_udp_ports',    'inet_service', '',              udp_text)
+    set_wl   = _set_block('web_whitelist_v4', 'ipv4_addr',    'flags interval', whitelist_text)
+    set_bl   = _set_block('web_blacklist_v4', 'ipv4_addr',    'flags interval', blacklist_text)
+
     rules = f"""# Режим Butler: {mode}
 {skipped_comment}table inet butler {{
-    set web_tcp_ports {{
-        type inet_service
-        elements = {{ {tcp_text} }}
-    }}
+{set_tcp}
 
-    set web_udp_ports {{
-        type inet_service
-        elements = {{ {udp_text} }}
-    }}
+{set_udp}
 
-    set web_whitelist_v4 {{
-        type ipv4_addr
-        flags interval
-        elements = {{ {whitelist_text} }}
-    }}
+{set_wl}
 
-    set web_blacklist_v4 {{
-        type ipv4_addr
-        flags interval
-        elements = {{ {blacklist_text} }}
-    }}
+{set_bl}
 
     chain input {{
         type filter hook input priority filter; policy accept;
@@ -268,24 +269,20 @@ def build_empty_butler_rules():
     return """table inet butler {
     set web_tcp_ports {
         type inet_service
-        elements = { }
     }
 
     set web_udp_ports {
         type inet_service
-        elements = { }
     }
 
     set web_whitelist_v4 {
         type ipv4_addr
         flags interval
-        elements = { }
     }
 
     set web_blacklist_v4 {
         type ipv4_addr
         flags interval
-        elements = { }
     }
 
     chain input {
@@ -411,6 +408,62 @@ def services():
 
     rows = db.execute('SELECT * FROM services ORDER BY port').fetchall()
     return render_template('services.html', services=rows)
+
+
+@bp.route('/services/<int:service_id>/edit', methods=['GET', 'POST'])
+@login_required
+def edit_service(service_id):
+    db = get_db()
+    service = db.execute('SELECT * FROM services WHERE id = ?', (service_id,)).fetchone()
+    if service is None:
+        flash('Сервис не найден.', 'error')
+        return redirect(url_for('main.services'))
+
+    if request.method == 'POST':
+        name        = request.form['name'].strip()
+        ports_raw   = request.form['ports_raw'].strip()
+        protocol    = request.form['protocol'].strip() or 'tcp'
+        description = request.form['description'].strip()
+
+        error = None
+        parsed_ports = []
+
+        if not name:
+            error = 'Имя сервиса обязательно.'
+        elif not ports_raw:
+            error = 'Укажите хотя бы один порт.'
+        else:
+            parsed_ports = parse_ports_raw(ports_raw)
+            if not parsed_ports:
+                error = 'Не удалось распознать порты.'
+
+        if error is None:
+            port = parsed_ports[0]
+            dup = db.execute(
+                'SELECT id FROM services WHERE port = ? AND id != ?', (port, service_id)
+            ).fetchone()
+            if dup:
+                error = f'Порт {port} уже занят другим сервисом.'
+
+        if error is None:
+            db.execute(
+                'UPDATE services SET name=?, port=?, ports_raw=?, protocol=?, description=? WHERE id=?',
+                (name, parsed_ports[0], ports_raw, protocol, description, service_id)
+            )
+            db.execute(
+                'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
+                ('update', 'service', f'{name}:{ports_raw}', 'Сервис изменён')
+            )
+            db.commit()
+            flash(f'Сервис "{name}" обновлён.', 'success')
+            return redirect(url_for('main.services'))
+
+        flash(error, 'error')
+        # Возвращаем введённые данные обратно в форму
+        service = {'id': service_id, 'name': name, 'ports_raw': ports_raw,
+                   'protocol': protocol, 'description': description}
+
+    return render_template('service_edit.html', service=service)
 
 
 @bp.route('/services/<int:service_id>/delete', methods=['POST'])
@@ -550,7 +603,8 @@ def allow_attempt(attempt_id):
         flash('Попытка не найдена.', 'error')
         return redirect(url_for('main.attempts'))
 
-    ip = row['ip_address']
+    ip_raw = row['ip_address']
+    ip = str(ipaddress.ip_network(ip_raw, strict=False))  # нормализуем
     # Проверим дубликат в whitelist
     exists = db.execute(
         'SELECT id FROM whitelist_entries WHERE ip_address = ? AND enabled = 1', (ip,)
@@ -585,7 +639,8 @@ def block_attempt(attempt_id):
         flash('Попытка не найдена.', 'error')
         return redirect(url_for('main.attempts'))
 
-    ip = row['ip_address']
+    ip_raw = row['ip_address']
+    ip = str(ipaddress.ip_network(ip_raw, strict=False))  # нормализуем
     exists = db.execute(
         'SELECT id FROM blacklist_entries WHERE ip_address = ? AND enabled = 1', (ip,)
     ).fetchone()
@@ -617,15 +672,23 @@ def attempts():
     rows = db.execute('SELECT * FROM attempts ORDER BY last_seen DESC, id DESC').fetchall()
 
     # Собрать подписи к адресам: сначала белый список, потом чёрный
+    # Нормализуем ключи: 1.2.3.4/32 → 1.2.3.4 для сопоставления с attempts.ip_address
     ip_labels = {}
+    def _norm_ip_key(raw):
+        try:
+            net = ipaddress.ip_network(raw, strict=False)
+            return str(net.network_address) if net.prefixlen == 32 else str(net)
+        except ValueError:
+            return raw
+
     for r in db.execute('SELECT ip_address, owner_name, comment FROM whitelist_entries WHERE enabled = 1').fetchall():
         label = r['owner_name'] or r['comment'] or ''
         if label:
-            ip_labels[r['ip_address']] = ('whitelist', label)
+            ip_labels[_norm_ip_key(r['ip_address'])] = ('whitelist', label)
     for r in db.execute('SELECT ip_address, reason, comment FROM blacklist_entries WHERE enabled = 1').fetchall():
         label = r['comment'] or r['reason'] or ''
         if label:
-            ip_labels[r['ip_address']] = ('blacklist', label)
+            ip_labels[_norm_ip_key(r['ip_address'])] = ('blacklist', label)
 
     return render_template('attempts.html', attempts=rows, ip_labels=ip_labels)
 

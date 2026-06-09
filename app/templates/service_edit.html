@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}Редактирование сервиса — Дворецкий{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Редактирование сервиса</h1>
+    <p>Измените параметры сервиса и сохраните.</p>
+</div>
+
+<div class="card">
+    <form method="post" class="data-form">
+        <label>
+            Имя сервиса
+            <input type="text" name="name" value="{{ service.name }}" required>
+        </label>
+
+        <label>
+            Порты
+            <input type="text" name="ports_raw"
+                   value="{{ service.ports_raw if service.ports_raw else service.port }}"
+                   placeholder="8011 или 80,443 или 8000-8100" required>
+        </label>
+
+        <label>
+            Протокол
+            <select name="protocol">
+                <option value="tcp" {% if service.protocol == 'tcp' %}selected{% endif %}>TCP</option>
+                <option value="udp" {% if service.protocol == 'udp' %}selected{% endif %}>UDP</option>
+                <option value="both" {% if service.protocol == 'both' %}selected{% endif %}>TCP + UDP</option>
+            </select>
+        </label>
+
+        <label>
+            Описание
+            <input type="text" name="description" value="{{ service.description or '' }}">
+        </label>
+
+        <div class="form-actions">
+            <button type="submit">Сохранить</button>
+            <a class="secondary-button" href="{{ url_for('main.services') }}">Отмена</a>
+        </div>
+    </form>
+</div>
+{% endblock %}
