@@ -92,7 +92,6 @@ def migrate_db(db):
     cols = {row[1] for row in db.execute("PRAGMA table_info(services)").fetchall()}
     if 'ports_raw' not in cols:
         db.execute("ALTER TABLE services ADD COLUMN ports_raw TEXT NOT NULL DEFAULT ''")
-        # Заполнить ports_raw из существующего port
         db.execute("UPDATE services SET ports_raw = CAST(port AS TEXT) WHERE ports_raw = ''")
         db.commit()
 
@@ -125,9 +124,14 @@ def get_setting(key, default=None):
 
 
 def set_setting(key, value):
+    """
+    Установить значение настройки.
+    Используем INSERT OR REPLACE вместо INSERT ... ON CONFLICT
+    для совместимости с SQLite < 3.24 (Astra Linux 1.8).
+    """
     db = get_db()
     db.execute(
-        'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)',
         (key, value)
     )
     db.commit()
@@ -172,7 +176,6 @@ def seed_demo_data():
             ('11.11.11.11', 'Ручная блокировка', 'Тестовая запись в черном списке')
         )
 
-    # Режим работы по умолчанию: whitelist
     mode_exists = db.execute("SELECT COUNT(*) AS count FROM settings WHERE key = 'firewall_mode'").fetchone()['count']
     if mode_exists == 0:
         db.execute("INSERT INTO settings (key, value) VALUES ('firewall_mode', 'whitelist')")
@@ -183,15 +186,11 @@ def seed_demo_data():
 def init_app(app):
     app.teardown_appcontext(close_db)
 
-    # Автосоздание и миграция БД при старте приложения
     with app.app_context():
         db = get_db()
-        # Создаём все таблицы если их нет (безопасно — IF NOT EXISTS)
         db.executescript(SCHEMA_SQL)
         db.commit()
-        # Применяем миграции (новые колонки и т.д.)
         migrate_db(db)
-        # Засеваем начальные данные если БД пустая
         seed_demo_data()
 
     @app.cli.command('init-db')
