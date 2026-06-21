@@ -3,7 +3,8 @@
 # sudoers.sh — настройка sudoers для Butler
 #
 # Разрешает пользователю вызывать команды брандмауэра, conntrack и journalctl
-# без пароля. Поддерживает два бэкенда: nftables (default) и ufw.
+# без пароля, в том числе без tty (нужно для вызовов из Python/Flask).
+# Поддерживает два бэкенда: nftables (default) и ufw.
 #
 # Использование:
 #   ./sudoers.sh                          # для текущего пользователя, бэкенд nftables
@@ -42,7 +43,6 @@ die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 if [[ $REMOVE -eq 1 ]]; then
   sudo rm -f "$SUDOERS_FILE"
-  sudo visudo -cf /etc/sudoers > /dev/null
   ok "Правило sudoers удалено."
   exit 0
 fi
@@ -50,7 +50,7 @@ fi
 # ---------------------------------------------------------------------------
 # Проверяем наличие команд
 # ---------------------------------------------------------------------------
-REQUIRED_CMDS=(visudo mkdir install test cat journalctl)
+REQUIRED_CMDS=(mkdir install test cat journalctl)
 OPTIONAL_CMDS=(conntrack)
 
 if [[ "$BACKEND" == "nftables" ]]; then
@@ -61,44 +61,63 @@ else
   die "Неизвестный бэкенд: $BACKEND. Допустимые значения: nftables, ufw"
 fi
 
+# visudo нужен только для валидации, ищем в PATH
+VISUDO_BIN="$(PATH="$PATH:/usr/sbin" command -v visudo 2>/dev/null || true)"
+[[ -n "$VISUDO_BIN" ]] || die "Команда visudo не найдена.\n  Убедись что sudo установлен: sudo apt install sudo"
+
 for cmd in "${REQUIRED_CMDS[@]}"; do
-  command -v "$cmd" > /dev/null || die "Команда не найдена: $cmd\n  Установи: sudo apt install $cmd"
+  PATH="$PATH:/usr/sbin" command -v "$cmd" > /dev/null ||
+    die "Команда не найдена: $cmd\n  Установи: sudo apt install $cmd"
 done
 
 for cmd in "${OPTIONAL_CMDS[@]}"; do
-  if ! command -v "$cmd" > /dev/null 2>&1; then
+  if ! PATH="$PATH:/usr/sbin" command -v "$cmd" > /dev/null 2>&1; then
     warn "Команда '$cmd' не найдена. Conntrack-сброс соединений будет недоступен."
     warn "  Установи: sudo apt install conntrack"
   fi
 done
 
 # ---------------------------------------------------------------------------
-# Определяем пути к бинарям
+# Определяем пути к бинарям (полные пути обязательны для sudoers)
 # ---------------------------------------------------------------------------
-VISUDO_BIN="$(command -v visudo)"
-MKDIR_BIN="$(command -v mkdir)"
-INSTALL_BIN="$(command -v install)"
-TEST_BIN="$(command -v test 2>/dev/null || true)"
+_bin() { PATH="$PATH:/usr/sbin:/usr/bin:/sbin:/bin" command -v "$1"; }
+
+MKDIR_BIN="$(_bin mkdir)"
+INSTALL_BIN="$(_bin install)"
+TEST_BIN="$(_bin test 2>/dev/null || echo /usr/bin/test)"
 [[ "$TEST_BIN" == /* ]] || TEST_BIN="/usr/bin/test"
-CAT_BIN="$(command -v cat)"
-JOURNALCTL_BIN="$(command -v journalctl)"
+CAT_BIN="$(_bin cat)"
+JOURNALCTL_BIN="$(_bin journalctl)"
 
 # Бэкенд-специфичные команды
-FIREWALL_ENTRIES=""
+FIREWALL_BIN=""
 if [[ "$BACKEND" == "nftables" ]]; then
-  NFT_BIN="$(command -v nft)"
-  FIREWALL_ENTRIES=", ${NFT_BIN}"
+  FIREWALL_BIN="$(_bin nft)"
 elif [[ "$BACKEND" == "ufw" ]]; then
-  UFW_BIN="$(command -v ufw)"
-  FIREWALL_ENTRIES=", ${UFW_BIN}"
+  FIREWALL_BIN="$(_bin ufw)"
 fi
 
 # Conntrack (опционально)
-CONNTRACK_ENTRY=""
-if command -v conntrack > /dev/null 2>&1; then
-  CONNTRACK_BIN="$(command -v conntrack)"
-  CONNTRACK_ENTRY=", ${CONNTRACK_BIN}"
+CONNTRACK_BIN=""
+if PATH="$PATH:/usr/sbin" command -v conntrack > /dev/null 2>&1; then
+  CONNTRACK_BIN="$(_bin conntrack)"
 fi
+
+# ---------------------------------------------------------------------------
+# Формируем список всех команд для sudoers
+# ---------------------------------------------------------------------------
+ALL_BINS=("$FIREWALL_BIN" "$MKDIR_BIN" "$INSTALL_BIN" "$TEST_BIN" "$CAT_BIN" "$JOURNALCTL_BIN")
+[[ -n "$CONNTRACK_BIN" ]] && ALL_BINS+=("$CONNTRACK_BIN")
+
+# Строка NOPASSWD для sudoers
+NOPASSWD_LIST=$(printf '%s, ' "${ALL_BINS[@]}")
+NOPASSWD_LIST="${NOPASSWD_LIST%, }"  # убрать трейлинг запятую
+
+# Строки !requiretty для каждой команды
+REQUIRETTY_LINES=""
+for bin in "${ALL_BINS[@]}"; do
+  REQUIRETTY_LINES+="Defaults!${bin} !requiretty"$'\n'
+done
 
 # ---------------------------------------------------------------------------
 # Пишем файл sudoers
@@ -108,21 +127,24 @@ trap 'rm -f "$TMP"' EXIT
 
 cat > "$TMP" <<RULES
 # Managed by sudoers.sh (Butler) — backend: ${BACKEND}
-${BUTLER_USER} ALL=(root) NOPASSWD: ${MKDIR_BIN}, ${INSTALL_BIN}, ${TEST_BIN}, ${CAT_BIN}, ${JOURNALCTL_BIN}${FIREWALL_ENTRIES}${CONNTRACK_ENTRY}
+# !requiretty needed for passwordless sudo from Python/Flask (no tty)
+${REQUIRETTY_LINES}
+${BUTLER_USER} ALL=(root) NOPASSWD: ${NOPASSWD_LIST}
 RULES
 
 "$VISUDO_BIN" -cf "$TMP" > /dev/null || die "Ошибка синтаксиса sudoers — файл не установлен."
 
-sudo install -m 0440 "$TMP" "$SUDOERS_FILE"
+sudo install -m 0440 -o root -g root "$TMP" "$SUDOERS_FILE"
 sudo "$VISUDO_BIN" -cf "$SUDOERS_FILE" > /dev/null
 
 ok "Sudoers настроен для пользователя: ${BUTLER_USER}  (бэкенд: ${BACKEND})"
 echo "  Файл: $SUDOERS_FILE"
 echo "  Бэкенд: $BACKEND"
 if [[ "$BACKEND" == "nftables" ]]; then
-  echo "  Разрешены: nft, journalctl${CONNTRACK_ENTRY:+, conntrack}"
+  echo "  Разрешены: nft, journalctl${CONNTRACK_BIN:+, conntrack}"
 else
-  echo "  Разрешены: ufw, journalctl${CONNTRACK_ENTRY:+, conntrack}"
+  echo "  Разрешены: ufw, journalctl${CONNTRACK_BIN:+, conntrack}"
 fi
 echo ""
 warn "Не забудь установить BUTLER_BACKEND=${BACKEND} в butler.env!"
+warn "ВАЖНО: после \"ufw reset\" файл sudoers удаляется. Butler восстанавливает его автоматически."
