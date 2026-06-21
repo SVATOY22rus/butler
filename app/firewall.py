@@ -17,6 +17,7 @@ import ipaddress
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,10 @@ from .db import get_db, get_setting, parse_ports_raw
 
 # Full path required for sudoers NOPASSWD match on Astra Linux
 _UFW = shutil.which('ufw') or '/usr/sbin/ufw'
+_INSTALL = shutil.which('install') or '/usr/bin/install'
+_VISUDO  = shutil.which('visudo')  or '/usr/sbin/visudo'
+
+SUDOERS_FILE = '/etc/sudoers.d/butler'
 
 # ---------------------------------------------------------------------------
 # Helpers shared by both backends
@@ -101,6 +106,79 @@ def _generated_dir() -> Path:
     d = Path('generated')
     d.mkdir(exist_ok=True)
     return d
+
+
+# ---------------------------------------------------------------------------
+# Sudoers self-repair (needed after `ufw reset` which wipes /etc/sudoers.d/)
+# ---------------------------------------------------------------------------
+
+def _restore_sudoers() -> None:
+    """Rebuild /etc/sudoers.d/butler using sudo tee (works without NOPASSWD on tee itself).
+
+    Called automatically after `ufw reset` because that command removes
+    all files from /etc/sudoers.d/ on Astra Linux.
+
+    The approach:
+      1. Write the new content to a temp file in /tmp (world-writable).
+      2. Use `sudo install` (which IS still in sudoers via the old session) to
+         place it with correct permissions.
+
+    If sudo is completely lost (fresh deploy or session expired), this will
+    raise RuntimeError — the user must run sudoers.sh manually.
+    """
+    # Determine which binary to protect based on current backend
+    backend = _get_backend()
+    butler_port = _get_butler_port()
+
+    firewall_bin = _UFW if backend == 'ufw' else (shutil.which('nft') or '/usr/sbin/nft')
+    bins = [
+        firewall_bin,
+        shutil.which('mkdir')    or '/usr/bin/mkdir',
+        shutil.which('install')  or '/usr/bin/install',
+        '/usr/bin/test',
+        shutil.which('cat')      or '/usr/bin/cat',
+        shutil.which('journalctl') or '/usr/bin/journalctl',
+    ]
+    conntrack = shutil.which('conntrack') or shutil.which('conntrack', path='/usr/sbin:/sbin')
+    if conntrack:
+        bins.append(conntrack)
+
+    try:
+        import pwd
+        user = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        user = os.environ.get('USER', 'administrator')
+
+    requiretty_lines = '\n'.join(f'Defaults!{b} !requiretty' for b in bins)
+    nopasswd_list    = ', '.join(bins)
+
+    content = (
+        f"# Managed by Butler (auto-restored after ufw reset)  backend:{backend}\n"
+        f"{requiretty_lines}\n"
+        f"{user} ALL=(root) NOPASSWD: {nopasswd_list}\n"
+    )
+
+    # Write to a temp file then install with correct permissions
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sudoers',
+                                     delete=False, encoding='utf-8') as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        # Use sudo install (which still works because this sudo session
+        # was started before the reset cleared sudoers.d).
+        run_command(
+            ['sudo', '-n', _INSTALL, '-m', '0440', '-o', 'root', '-g', 'root',
+             tmp_path, SUDOERS_FILE],
+            f'Не удалось восстановить sudoers после ufw reset.'
+            f' Запустите sudoers.sh вручную: sudo ./sudoers.sh --backend {backend}',
+            timeout=10,
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +394,7 @@ def _nft_reset() -> tuple[Path, Path | None]:
 
 
 # ---------------------------------------------------------------------------
-# UFW backend (new)
+# UFW backend
 # ---------------------------------------------------------------------------
 
 def _ufw_build_rules() -> tuple[str, str, list]:
@@ -452,15 +530,25 @@ def _ufw_apply() -> tuple[Path, None, None]:
 def _ufw_reset() -> tuple[None, None]:
     """Remove all Butler-managed UFW rules by resetting to defaults.
 
-    After reset, SSH and Butler UI port are immediately re-allowed.
+    IMPORTANT: `ufw reset` on Astra Linux removes ALL files from
+    /etc/sudoers.d/, which would break subsequent sudo -n calls.
+    We restore the sudoers file immediately after the reset.
     """
     butler_port = _get_butler_port()
+
+    # Step 1 — reset UFW (this wipes /etc/sudoers.d/ on Astra Linux!)
     run_command(['sudo', '-n', _UFW, '--force', 'reset'],
                 'Не удалось сбросить UFW:')
+
+    # Step 2 — immediately restore sudoers (sudo session still active in memory)
+    _restore_sudoers()
+
+    # Step 3 — re-enable UFW and re-allow critical ports
     run_command(['sudo', '-n', _UFW, '--force', 'enable'],
                 'Не удалось включить UFW после сброса:')
     run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
                 'Не удалось восстановить правило SSH после сброса:')
     run_command(['sudo', '-n', _UFW, 'allow', f'{butler_port}/tcp'],
                 f'Не удалось защитить порт Butler ({butler_port}/tcp) после сброса:')
+
     return None, None
