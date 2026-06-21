@@ -5,7 +5,8 @@
 <section class="panel">
     <h2>Режим работы</h2>
     <p>
-        Определяет, какой список используется при генерации правил nftables.
+        Определяет, какой список используется при генерации правил
+        <strong>{{ backend }}</strong>.
         Второй список при этом <strong>игнорируется</strong> полностью.
     </p>
 
@@ -43,13 +44,17 @@
     <div class="panel-header">
         <div>
             <h2>Сгенерированные правила</h2>
+            {% if backend == 'ufw' %}
+            <p>Предпросмотр UFW-команд на основе текущей базы и режима. Применяется только вручную.</p>
+            {% else %}
             <p>Предпросмотр nftables-конфига на основе текущей базы и режима. Применяется только вручную.</p>
+            {% endif %}
         </div>
     </div>
 
     {% if skipped %}
     <div class="flash flash-error" style="margin-bottom:12px;">
-        Следующие IPv6-адреса не включены в правила (набор поддерживает только IPv4):
+        Следующие IPv6-адреса не включены в правила (поддерживается только IPv4):
         <code>{{ skipped | join(', ') }}</code>
     </div>
     {% endif %}
@@ -60,7 +65,7 @@
         </form>
 
         <form method="post" action="{{ url_for('main.firewall_apply') }}"
-              onsubmit="return confirm('Применить правила к nftables прямо сейчас?')">
+              onsubmit="return confirm('Применить правила через {{ backend }} прямо сейчас?')">
             <input type="hidden" name="confirm_apply" value="yes">
             <button type="submit" class="button-warning">Применить правила</button>
         </form>
