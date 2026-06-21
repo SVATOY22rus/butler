@@ -14,6 +14,7 @@ All public functions used by routes.py:
 from __future__ import annotations
 
 import ipaddress
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,8 @@ from flask import current_app
 
 from .db import get_db, get_setting, parse_ports_raw
 
+# Full path required for sudoers NOPASSWD match on Astra Linux
+_UFW = shutil.which('ufw') or '/usr/sbin/ufw'
 
 # ---------------------------------------------------------------------------
 # Helpers shared by both backends
@@ -74,14 +77,14 @@ def _backup_file(target_file: Path) -> Path | None:
     backup_file = backup_dir / f'butler-target-backup-{timestamp}.bak'
 
     exists = subprocess.run(
-        ['sudo', '-n', 'test', '-f', str(target_file)],
+        ['sudo', '-n', '/usr/bin/test', '-f', str(target_file)],
         capture_output=True, text=True, timeout=5
     )
     if exists.returncode != 0:
         return None
 
     read = run_command(
-        ['sudo', '-n', 'cat', str(target_file)],
+        ['sudo', '-n', '/usr/bin/cat', str(target_file)],
         'Не удалось прочитать target-файл для backup:'
     )
     backup_file.write_text(read.stdout, encoding='utf-8')
@@ -250,9 +253,9 @@ def _nft_apply() -> tuple[Path, Path, Path | None]:
     _nft_write_rules_file()
     backup_file = _backup_file(target_file)
 
-    run_command(['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
+    run_command(['sudo', '-n', '/usr/bin/mkdir', '-p', str(target_file.parent)],
                 'Не удалось создать каталог для target-файла:')
-    run_command(['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
+    run_command(['sudo', '-n', '/usr/bin/install', '-m', '0644', str(generated_file), str(target_file)],
                 'Не удалось установить target-файл:')
     run_command(['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
                 'Проверка nftables-конфига не прошла:')
@@ -295,9 +298,9 @@ def _nft_reset() -> tuple[Path, Path | None]:
 }
 """
     generated_file.write_text(empty, encoding='utf-8')
-    run_command(['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
+    run_command(['sudo', '-n', '/usr/bin/mkdir', '-p', str(target_file.parent)],
                 'Не удалось создать каталог для target-файла:')
-    run_command(['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
+    run_command(['sudo', '-n', '/usr/bin/install', '-m', '0644', str(generated_file), str(target_file)],
                 'Не удалось установить reset target-файл:')
     run_command(['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
                 'Проверка reset-конфига не прошла:')
@@ -376,14 +379,7 @@ def _ufw_write_rules_file() -> Path:
 
 
 def _ufw_apply() -> tuple[Path, None, None]:
-    """Apply rules via UFW.
-
-    Strategy:
-      1. Reset all Butler-managed UFW rules (delete numbered rules that contain
-         a Butler comment, or just flush + re-add everything on first use).
-      2. Make sure UFW is enabled.
-      3. Add allow/deny rules one by one using `ufw insert` for priority.
-    """
+    """Apply rules via UFW using full binary path for sudoers compatibility."""
     generated_file = _ufw_write_rules_file()
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')
@@ -395,15 +391,12 @@ def _ufw_apply() -> tuple[Path, None, None]:
     whitelist_v4, _ = _collect_ipv4(whitelist_rows)
     blacklist_v4, _ = _collect_ipv4(blacklist_rows)
 
-    # Delete previously inserted Butler rules (tagged with comment 'butler-managed')
-    # UFW does not have a native tag, so we track rules by deleting from highest number.
-    # Safe approach: delete all rules that match butler-inserted ports by rebuilding.
-    # Step 1 — enable UFW (non-interactively, keep existing default policy)
-    run_command(['sudo', '-n', 'ufw', '--force', 'enable'],
+    # Step 1 — enable UFW (non-interactively)
+    run_command(['sudo', '-n', _UFW, '--force', 'enable'],
                 'Не удалось включить UFW:')
 
     # Step 2 — always allow SSH first (idempotent)
-    run_command(['sudo', '-n', 'ufw', 'allow', '22/tcp'],
+    run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
                 'Не удалось добавить правило SSH:')
 
     # Step 3 — apply service rules
@@ -415,25 +408,23 @@ def _ufw_apply() -> tuple[Path, None, None]:
         for port in sorted(set(expanded)):
             for use_proto in (['tcp', 'udp'] if proto == 'both' else [proto if proto in ('tcp', 'udp') else 'tcp']):
                 if mode == 'whitelist':
-                    # Allow per-IP first, then deny all
                     for ip in whitelist_v4:
                         run_command(
-                            ['sudo', '-n', 'ufw', 'allow', 'from', ip, 'to', 'any', 'port', str(port), 'proto', use_proto],
+                            ['sudo', '-n', _UFW, 'allow', 'from', ip, 'to', 'any', 'port', str(port), 'proto', use_proto],
                             f'Не удалось добавить whitelist-правило {ip}:{port}/{use_proto}:'
                         )
                     run_command(
-                        ['sudo', '-n', 'ufw', 'deny', f'{port}/{use_proto}'],
+                        ['sudo', '-n', _UFW, 'deny', f'{port}/{use_proto}'],
                         f'Не удалось добавить deny {port}/{use_proto}:'
                     )
                 else:
-                    # Block listed IPs, allow rest
                     for ip in blacklist_v4:
                         run_command(
-                            ['sudo', '-n', 'ufw', 'deny', 'from', ip, 'to', 'any', 'port', str(port), 'proto', use_proto],
+                            ['sudo', '-n', _UFW, 'deny', 'from', ip, 'to', 'any', 'port', str(port), 'proto', use_proto],
                             f'Не удалось добавить blacklist-правило {ip}:{port}/{use_proto}:'
                         )
                     run_command(
-                        ['sudo', '-n', 'ufw', 'allow', f'{port}/{use_proto}'],
+                        ['sudo', '-n', _UFW, 'allow', f'{port}/{use_proto}'],
                         f'Не удалось добавить allow {port}/{use_proto}:'
                     )
 
@@ -441,15 +432,11 @@ def _ufw_apply() -> tuple[Path, None, None]:
 
 
 def _ufw_reset() -> tuple[None, None]:
-    """Remove all Butler-managed UFW rules by resetting to defaults.
-
-    WARNING: calls `ufw reset` which removes ALL rules.
-    After reset we re-add the SSH allow rule.
-    """
-    run_command(['sudo', '-n', 'ufw', '--force', 'reset'],
+    """Remove all Butler-managed UFW rules by resetting to defaults."""
+    run_command(['sudo', '-n', _UFW, '--force', 'reset'],
                 'Не удалось сбросить UFW:')
-    run_command(['sudo', '-n', 'ufw', '--force', 'enable'],
+    run_command(['sudo', '-n', _UFW, '--force', 'enable'],
                 'Не удалось включить UFW после сброса:')
-    run_command(['sudo', '-n', 'ufw', 'allow', '22/tcp'],
+    run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
                 'Не удалось восстановить правило SSH после сброса:')
     return None, None
