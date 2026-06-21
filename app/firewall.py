@@ -14,6 +14,7 @@ All public functions used by routes.py:
 from __future__ import annotations
 
 import ipaddress
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -32,6 +33,11 @@ _UFW = shutil.which('ufw') or '/usr/sbin/ufw'
 
 def _get_backend() -> str:
     return current_app.config.get('BUTLER_BACKEND', 'nftables').lower()
+
+
+def _get_butler_port() -> int:
+    """Return the port Butler web UI is listening on (default 5050)."""
+    return int(current_app.config.get('BUTLER_PORT', os.environ.get('BUTLER_PORT', 5050)))
 
 
 def run_command(command, error_prefix, timeout=10):
@@ -317,6 +323,7 @@ def _ufw_build_rules() -> tuple[str, str, list]:
     """Build a human-readable summary of UFW commands Butler would apply."""
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')
+    butler_port = _get_butler_port()
 
     services = db.execute('SELECT port, ports_raw, protocol FROM services ORDER BY port').fetchall()
     whitelist_rows = db.execute('SELECT ip_address FROM whitelist_entries WHERE enabled = 1 ORDER BY ip_address').fetchall()
@@ -330,8 +337,9 @@ def _ufw_build_rules() -> tuple[str, str, list]:
     if all_skipped:
         lines.append('# IPv6 skipped: ' + ', '.join(all_skipped))
     lines.append('')
-    lines.append('# --- always allow SSH ---')
+    lines.append('# --- protected system ports (never blocked) ---')
     lines.append('ufw allow 22/tcp')
+    lines.append(f'ufw allow {butler_port}/tcp  # Butler web UI')
     lines.append('')
 
     if mode == 'whitelist':
@@ -379,10 +387,15 @@ def _ufw_write_rules_file() -> Path:
 
 
 def _ufw_apply() -> tuple[Path, None, None]:
-    """Apply rules via UFW using full binary path for sudoers compatibility."""
+    """Apply rules via UFW.
+
+    Protected ports (SSH + Butler web UI) are always allowed first
+    to prevent self-lockout, regardless of whitelist/blacklist mode.
+    """
     generated_file = _ufw_write_rules_file()
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')
+    butler_port = _get_butler_port()
 
     services = db.execute('SELECT port, ports_raw, protocol FROM services ORDER BY port').fetchall()
     whitelist_rows = db.execute('SELECT ip_address FROM whitelist_entries WHERE enabled = 1 ORDER BY ip_address').fetchall()
@@ -391,13 +404,15 @@ def _ufw_apply() -> tuple[Path, None, None]:
     whitelist_v4, _ = _collect_ipv4(whitelist_rows)
     blacklist_v4, _ = _collect_ipv4(blacklist_rows)
 
-    # Step 1 — enable UFW (non-interactively)
+    # Step 1 — enable UFW
     run_command(['sudo', '-n', _UFW, '--force', 'enable'],
                 'Не удалось включить UFW:')
 
-    # Step 2 — always allow SSH first (idempotent)
+    # Step 2 — always protect SSH and Butler UI port (self-lockout prevention)
     run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
                 'Не удалось добавить правило SSH:')
+    run_command(['sudo', '-n', _UFW, 'allow', f'{butler_port}/tcp'],
+                f'Не удалось защитить порт Butler ({butler_port}/tcp):')
 
     # Step 3 — apply service rules
     for row in services:
@@ -406,6 +421,9 @@ def _ufw_apply() -> tuple[Path, None, None]:
         expanded = parse_ports_raw(ports_raw) or [row['port']]
 
         for port in sorted(set(expanded)):
+            # Never touch SSH or Butler port — already protected above
+            if port in (22, butler_port):
+                continue
             for use_proto in (['tcp', 'udp'] if proto == 'both' else [proto if proto in ('tcp', 'udp') else 'tcp']):
                 if mode == 'whitelist':
                     for ip in whitelist_v4:
@@ -432,11 +450,17 @@ def _ufw_apply() -> tuple[Path, None, None]:
 
 
 def _ufw_reset() -> tuple[None, None]:
-    """Remove all Butler-managed UFW rules by resetting to defaults."""
+    """Remove all Butler-managed UFW rules by resetting to defaults.
+
+    After reset, SSH and Butler UI port are immediately re-allowed.
+    """
+    butler_port = _get_butler_port()
     run_command(['sudo', '-n', _UFW, '--force', 'reset'],
                 'Не удалось сбросить UFW:')
     run_command(['sudo', '-n', _UFW, '--force', 'enable'],
                 'Не удалось включить UFW после сброса:')
     run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
                 'Не удалось восстановить правило SSH после сброса:')
+    run_command(['sudo', '-n', _UFW, 'allow', f'{butler_port}/tcp'],
+                f'Не удалось защитить порт Butler ({butler_port}/tcp) после сброса:')
     return None, None
