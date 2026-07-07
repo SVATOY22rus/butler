@@ -122,6 +122,41 @@ RULES
 sudo install -m 0440 -o root -g root "$TMP" "$SUDOERS_FILE"
 sudo "$VISUDO_BIN" -cf "$SUDOERS_FILE" > /dev/null
 
+# ---------------------------------------------------------------------------
+# Гарантируем, что @includedir /etc/sudoers.d идёт ПОСЛЕДНИМ в /etc/sudoers.
+#
+# На Astra Linux (и некоторых других) после @includedir идёт строка
+# вида '%astra-admin ALL=(ALL:ALL) ALL'. sudo выбирает ПОСЛЕДНЕЕ
+# совпадение, поэтому это общее парольное правило перекрывает наш
+# NOPASSWD из sudoers.d => `sudo -n ufw ...` всё равно требует пароль.
+# Фикс: перемещаем строку @includedir в самый конец /etc/sudoers,
+# чтобы файлы sudoers.d парсились после групповых правил.
+MAIN_SUDOERS="/etc/sudoers"
+INCLUDE_RE='^[[:space:]]*@includedir[[:space:]]+/etc/sudoers\.d[[:space:]]*$'
+INCLUDE_LINE="$(sudo grep -nE "$INCLUDE_RE" "$MAIN_SUDOERS" | head -n1 | cut -d: -f1)"
+if [[ -n "$INCLUDE_LINE" ]]; then
+  TOTAL_LINES="$(sudo wc -l < "$MAIN_SUDOERS")"
+  # Есть ли после @includedir активные правила (не комментарий/пустая)?
+  TAIL_RULES="$(sudo sed -n "$((INCLUDE_LINE + 1)),\$p" "$MAIN_SUDOERS" | grep -vE '^[[:space:]]*(#|$)' || true)"
+  if [[ -n "$TAIL_RULES" ]]; then
+    warn "В /etc/sudoers после @includedir есть правила, перекрывающие NOPASSWD."
+    warn "Перемещаю @includedir в конец файла (бэкап: ${MAIN_SUDOERS}.butler.bak)."
+    SUDO_TMP="$(mktemp)"
+    # Убираем строку @includedir и дописываем её в конец
+    sudo grep -vE "$INCLUDE_RE" "$MAIN_SUDOERS" > "$SUDO_TMP"
+    printf '@includedir /etc/sudoers.d\n' >> "$SUDO_TMP"
+    if sudo "$VISUDO_BIN" -cf "$SUDO_TMP" > /dev/null; then
+      sudo cp -a "$MAIN_SUDOERS" "${MAIN_SUDOERS}.butler.bak"
+      sudo install -m 0440 -o root -g root "$SUDO_TMP" "$MAIN_SUDOERS"
+      ok "@includedir перемещён в конец /etc/sudoers — NOPASSWD теперь приоритетнее."
+    else
+      warn "visudo отклонил изменённый /etc/sudoers — ОСТАВЛЯЮ КАК БЫЛО."
+      warn "Сделайте вручную: перенесите '@includedir /etc/sudoers.d' в конец через 'sudo visudo'."
+    fi
+    rm -f "$SUDO_TMP"
+  fi
+fi
+
 ok "Sudoers настроен для пользователя: ${BUTLER_USER}"
 echo "  Файл: $SUDOERS_FILE"
 echo "  Разрешены: ufw, journalctl${CONNTRACK_BIN:+, conntrack}"
