@@ -26,7 +26,7 @@ from flask import current_app
 from .db import get_db, get_setting, parse_ports_raw
 
 # Full path required for sudoers NOPASSWD match on Astra Linux
-_UFW = shutil.which('ufw') or '/usr/sbin/ufw'
+_UFW     = shutil.which('ufw') or '/usr/sbin/ufw'
 _INSTALL = shutil.which('install') or '/usr/bin/install'
 _VISUDO  = shutil.which('visudo')  or '/usr/sbin/visudo'
 
@@ -113,7 +113,7 @@ def _generated_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 def _restore_sudoers() -> None:
-    """Rebuild /etc/sudoers.d/butler using sudo tee (works without NOPASSWD on tee itself).
+    """Rebuild /etc/sudoers.d/butler using sudo install.
 
     Called automatically after `ufw reset` because that command removes
     all files from /etc/sudoers.d/ on Astra Linux.
@@ -126,17 +126,16 @@ def _restore_sudoers() -> None:
     If sudo is completely lost (fresh deploy or session expired), this will
     raise RuntimeError — the user must run sudoers.sh manually.
     """
-    # Determine which binary to protect based on current backend
     backend = _get_backend()
     butler_port = _get_butler_port()
 
     firewall_bin = _UFW if backend == 'ufw' else (shutil.which('nft') or '/usr/sbin/nft')
     bins = [
         firewall_bin,
-        shutil.which('mkdir')    or '/usr/bin/mkdir',
-        shutil.which('install')  or '/usr/bin/install',
+        shutil.which('mkdir')      or '/usr/bin/mkdir',
+        shutil.which('install')    or '/usr/bin/install',
         '/usr/bin/test',
-        shutil.which('cat')      or '/usr/bin/cat',
+        shutil.which('cat')        or '/usr/bin/cat',
         shutil.which('journalctl') or '/usr/bin/journalctl',
     ]
     conntrack = shutil.which('conntrack') or shutil.which('conntrack', path='/usr/sbin:/sbin')
@@ -158,15 +157,12 @@ def _restore_sudoers() -> None:
         f"{user} ALL=(root) NOPASSWD: {nopasswd_list}\n"
     )
 
-    # Write to a temp file then install with correct permissions
     with tempfile.NamedTemporaryFile(mode='w', suffix='.sudoers',
                                      delete=False, encoding='utf-8') as tmp:
         tmp.write(content)
         tmp_path = tmp.name
 
     try:
-        # Use sudo install (which still works because this sudo session
-        # was started before the reset cleared sudoers.d).
         run_command(
             ['sudo', '-n', _INSTALL, '-m', '0440', '-o', 'root', '-g', 'root',
              tmp_path, SUDOERS_FILE],
@@ -420,37 +416,25 @@ def _ufw_build_rules() -> tuple[str, str, list]:
     lines.append(f'ufw allow {butler_port}/tcp  # Butler web UI')
     lines.append('')
 
-    if mode == 'whitelist':
-        lines.append('# --- whitelist: allow only listed IPs to managed ports, deny rest ---')
-        for row in services:
-            proto = (row['protocol'] or 'tcp').lower()
-            ports_raw = row['ports_raw'] or str(row['port'])
-            expanded = parse_ports_raw(ports_raw) or [row['port']]
-            for port in sorted(set(expanded)):
-                if proto in ('tcp', 'both', 'udp'):
-                    use_proto = 'tcp' if proto in ('tcp', 'both') else 'udp'
+    for row in services:
+        proto = (row['protocol'] or 'tcp').lower()
+        ports_raw = row['ports_raw'] or str(row['port'])
+        expanded = parse_ports_raw(ports_raw) or [row['port']]
+        # Determine which proto variants to emit
+        protos = ['tcp', 'udp'] if proto == 'both' else [proto if proto in ('tcp', 'udp') else 'tcp']
+
+        for port in sorted(set(expanded)):
+            for use_proto in protos:
+                if mode == 'whitelist':
+                    lines.append(f'# --- whitelist mode: port {port}/{use_proto} ---')
                     for ip in whitelist_v4:
                         lines.append(f'ufw allow from {ip} to any port {port} proto {use_proto}')
                     lines.append(f'ufw deny {port}/{use_proto}')
-                    if proto == 'both':
-                        for ip in whitelist_v4:
-                            lines.append(f'ufw allow from {ip} to any port {port} proto udp')
-                        lines.append(f'ufw deny {port}/udp')
-    else:
-        lines.append('# --- blacklist: block listed IPs, allow rest ---')
-        for row in services:
-            proto = (row['protocol'] or 'tcp').lower()
-            ports_raw = row['ports_raw'] or str(row['port'])
-            expanded = parse_ports_raw(ports_raw) or [row['port']]
-            for port in sorted(set(expanded)):
-                use_proto = 'tcp' if proto in ('tcp', 'both') else 'udp'
-                for ip in blacklist_v4:
-                    lines.append(f'ufw deny from {ip} to any port {port} proto {use_proto}')
-                lines.append(f'ufw allow {port}/{use_proto}')
-                if proto == 'both':
+                else:
+                    lines.append(f'# --- blacklist mode: port {port}/{use_proto} ---')
                     for ip in blacklist_v4:
-                        lines.append(f'ufw deny from {ip} to any port {port} proto udp')
-                    lines.append(f'ufw allow {port}/udp')
+                        lines.append(f'ufw deny from {ip} to any port {port} proto {use_proto}')
+                    lines.append(f'ufw allow {port}/{use_proto}')
 
     return '\n'.join(lines) + '\n', mode, all_skipped
 
@@ -465,15 +449,39 @@ def _ufw_write_rules_file() -> Path:
 
 
 def _ufw_apply() -> tuple[Path, None, None]:
-    """Apply rules via UFW.
+    """Apply rules via UFW (idempotent).
 
-    Protected ports (SSH + Butler web UI) are always allowed first
-    to prevent self-lockout, regardless of whitelist/blacklist mode.
+    To guarantee idempotency we reset UFW to a clean state first, then
+    restore sudoers (reset wipes /etc/sudoers.d/ on Astra Linux), re-enable
+    UFW, protect SSH and Butler UI, then apply the full rule set.
+    This means every apply is a fresh slate — no rule duplication on
+    repeated calls.
     """
+    butler_port = _get_butler_port()
+
+    # Step 1 — reset to clean state (wipes all rules and /etc/sudoers.d/ on Astra Linux)
+    run_command(['sudo', '-n', _UFW, '--force', 'reset'],
+                'Не удалось сбросить UFW перед применением правил:')
+
+    # Step 2 — restore sudoers immediately (sudo session still alive in memory)
+    _restore_sudoers()
+
+    # Step 3 — re-enable UFW
+    run_command(['sudo', '-n', _UFW, '--force', 'enable'],
+                'Не удалось включить UFW:')
+
+    # Step 4 — always protect SSH and Butler UI port (self-lockout prevention)
+    run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
+                'Не удалось добавить правило SSH:')
+    run_command(['sudo', '-n', _UFW, 'allow', f'{butler_port}/tcp'],
+                f'Не удалось защитить порт Butler ({butler_port}/tcp):')
+
+    # Step 5 — write generated summary file
     generated_file = _ufw_write_rules_file()
+
+    # Step 6 — apply service rules
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')
-    butler_port = _get_butler_port()
 
     services = db.execute('SELECT port, ports_raw, protocol FROM services ORDER BY port').fetchall()
     whitelist_rows = db.execute('SELECT ip_address FROM whitelist_entries WHERE enabled = 1 ORDER BY ip_address').fetchall()
@@ -482,31 +490,23 @@ def _ufw_apply() -> tuple[Path, None, None]:
     whitelist_v4, _ = _collect_ipv4(whitelist_rows)
     blacklist_v4, _ = _collect_ipv4(blacklist_rows)
 
-    # Step 1 — enable UFW
-    run_command(['sudo', '-n', _UFW, '--force', 'enable'],
-                'Не удалось включить UFW:')
-
-    # Step 2 — always protect SSH and Butler UI port (self-lockout prevention)
-    run_command(['sudo', '-n', _UFW, 'allow', '22/tcp'],
-                'Не удалось добавить правило SSH:')
-    run_command(['sudo', '-n', _UFW, 'allow', f'{butler_port}/tcp'],
-                f'Не удалось защитить порт Butler ({butler_port}/tcp):')
-
-    # Step 3 — apply service rules
     for row in services:
         proto = (row['protocol'] or 'tcp').lower()
         ports_raw = row['ports_raw'] or str(row['port'])
         expanded = parse_ports_raw(ports_raw) or [row['port']]
+        # FIX: correctly expand proto='both' into two separate passes
+        protos = ['tcp', 'udp'] if proto == 'both' else [proto if proto in ('tcp', 'udp') else 'tcp']
 
         for port in sorted(set(expanded)):
             # Never touch SSH or Butler port — already protected above
             if port in (22, butler_port):
                 continue
-            for use_proto in (['tcp', 'udp'] if proto == 'both' else [proto if proto in ('tcp', 'udp') else 'tcp']):
+            for use_proto in protos:
                 if mode == 'whitelist':
                     for ip in whitelist_v4:
                         run_command(
-                            ['sudo', '-n', _UFW, 'allow', 'from', ip, 'to', 'any', 'port', str(port), 'proto', use_proto],
+                            ['sudo', '-n', _UFW, 'allow', 'from', ip, 'to', 'any',
+                             'port', str(port), 'proto', use_proto],
                             f'Не удалось добавить whitelist-правило {ip}:{port}/{use_proto}:'
                         )
                     run_command(
@@ -516,7 +516,8 @@ def _ufw_apply() -> tuple[Path, None, None]:
                 else:
                     for ip in blacklist_v4:
                         run_command(
-                            ['sudo', '-n', _UFW, 'deny', 'from', ip, 'to', 'any', 'port', str(port), 'proto', use_proto],
+                            ['sudo', '-n', _UFW, 'deny', 'from', ip, 'to', 'any',
+                             'port', str(port), 'proto', use_proto],
                             f'Не удалось добавить blacklist-правило {ip}:{port}/{use_proto}:'
                         )
                     run_command(

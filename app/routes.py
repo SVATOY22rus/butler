@@ -1,4 +1,5 @@
 import ipaddress
+import re
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -55,21 +56,31 @@ def firewall_reset_command():
 
 
 # ---------------------------------------------------------------------------
-# Парсер логов (nftables формат)
+# Log line parser — supports both nftables and UFW formats
 # ---------------------------------------------------------------------------
 
-def parse_nft_log_line(line):
+def parse_log_line(line):
     """
-    Разобрать одну строку лога nftables из journald / /var/log/kern.log.
-    Формат: Jun  5 10:23:01 hostname kernel: BUTLER_DROP: IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ...
-    Возвращает dict {ip, port, ts} или None.
+    Parse a single firewall log line from journald / /var/log/kern.log.
+
+    Supported formats:
+      nftables: "... kernel: BUTLER IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ..."
+      UFW:      "... kernel: [UFW BLOCK] IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ..."
+
+    Returns dict {ip, port, ts} or None if line is not a recognised firewall event.
     """
-    import re
+    # Accept nftables BUTLER prefix OR UFW bracket prefix
+    is_nft = bool(re.search(r'kernel:.*BUTLER\b', line))
+    is_ufw = bool(re.search(r'kernel:.*\[UFW\s+(?:BLOCK|ALLOW|LIMIT|AUDIT)\]', line))
+    if not (is_nft or is_ufw):
+        return None
+
     m_src = re.search(r'SRC=(\S+)', line)
     m_dpt = re.search(r'DPT=(\d+)', line)
     m_ts  = re.search(r'^(\w{3}\s+\d+\s+\d+:\d+:\d+)', line)
     if not (m_src and m_dpt):
         return None
+
     ip_raw = m_src.group(1)
     port   = int(m_dpt.group(1))
     ts_raw = m_ts.group(1) if m_ts else None
@@ -78,6 +89,10 @@ def parse_nft_log_line(line):
     except ValueError:
         return None
     return {'ip': ip, 'port': port, 'ts_raw': ts_raw}
+
+
+# Backward-compat alias (used by butler-log-import.py if it imports this directly)
+parse_nft_log_line = parse_log_line
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +285,8 @@ def import_attempts_from_log():
 
     added = 0
     for line in log_text.splitlines():
-        parsed = parse_nft_log_line(line)
+        # parse_log_line handles both nftables (BUTLER) and UFW ([UFW BLOCK/...]) formats
+        parsed = parse_log_line(line)
         if parsed is None:
             continue
         ip   = parsed['ip']
