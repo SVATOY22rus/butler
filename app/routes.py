@@ -1,16 +1,48 @@
 import ipaddress
+import re
+import secrets as _secrets
 import sqlite3
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
 import click
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
+from flask import (Blueprint, abort, current_app, flash, redirect,
+                   render_template, request, session, url_for)
 from .auth import check_auth, login_required
 from .db import get_db, get_setting, set_setting, parse_ports_raw
 
 bp = Blueprint('main', __name__)
 
+
+# ---------------------------------------------------------------------------
+# CSRF helpers
+# ---------------------------------------------------------------------------
+
+def _get_csrf_token() -> str:
+    """Return the CSRF token for the current session, creating one if needed."""
+    if 'csrf_token' not in session:
+        session['csrf_token'] = _secrets.token_hex(32)
+    return session['csrf_token']
+
+
+def _check_csrf():
+    """Abort 400 if the CSRF token in the form does not match the session."""
+    token = session.get('csrf_token')
+    form_token = request.form.get('csrf_token', '')
+    if not token or not _secrets.compare_digest(str(token), str(form_token)):
+        abort(400, 'CSRF token missing or invalid.')
+
+
+@bp.context_processor
+def inject_csrf_token():
+    """Inject csrf_token into every template context automatically."""
+    return {'csrf_token': _get_csrf_token()}
+
+
+# ---------------------------------------------------------------------------
+# IP validation helper
+# ---------------------------------------------------------------------------
 
 def validate_ip_address(value):
     """Принимает одиночный IP или CIDR-подсеть. Возвращает нормализованную строку или None."""
@@ -30,7 +62,6 @@ def _collect_ipv4(rows):
         try:
             net = ipaddress.ip_network(raw, strict=False)
             if net.version == 4:
-                # Одиночный хост (/32) — без маски для читаемости
                 if net.prefixlen == 32:
                     result_v4.append(str(net.network_address))
                 else:
@@ -58,7 +89,7 @@ def _build_proto_rules(proto, set_name, mode):
 
 def build_nft_rules():
     db = get_db()
-    mode = get_setting('firewall_mode', 'whitelist')  # 'whitelist' | 'blacklist'
+    mode = get_setting('firewall_mode', 'whitelist')
 
     services = db.execute(
         'SELECT port, ports_raw, protocol FROM services ORDER BY port'
@@ -70,7 +101,6 @@ def build_nft_rules():
         'SELECT ip_address FROM blacklist_entries WHERE enabled = 1 ORDER BY ip_address'
     ).fetchall()
 
-    # Разбиваем порты по протоколу; 'both' идёт и в tcp, и в udp
     tcp_ports: set = set()
     udp_ports: set = set()
     for row in services:
@@ -88,8 +118,8 @@ def build_nft_rules():
     whitelist_v4, wl_skipped = _collect_ipv4(whitelist_rows)
     blacklist_v4, bl_skipped = _collect_ipv4(blacklist_rows)
 
-    tcp_text       = ', '.join(tcp_list)    if tcp_list    else ''
-    udp_text       = ', '.join(udp_list)    if udp_list    else ''
+    tcp_text       = ', '.join(tcp_list)     if tcp_list     else ''
+    udp_text       = ', '.join(udp_list)     if udp_list     else ''
     whitelist_text = ', '.join(whitelist_v4) if whitelist_v4 else ''
     blacklist_text = ', '.join(blacklist_v4) if blacklist_v4 else ''
 
@@ -98,7 +128,6 @@ def build_nft_rules():
     if all_skipped:
         skipped_comment = '    # IPv6 (не поддерживается в этом наборе): ' + ', '.join(all_skipped) + '\n'
 
-    # Строим правила только для протоколов у которых есть порты
     chain_parts = [
         '        iif lo accept',
         '        ct state established,related accept',
@@ -119,7 +148,6 @@ def build_nft_rules():
     chain_rules = '\n'.join(chain_parts)
 
     def _set_block(name, type_, extra, elements):
-        """Сгенерировать объявление set. elements пустой → блок elements опускается."""
         lines = [f'    set {name} {{', f'        type {type_}']
         if extra:
             lines.append(f'        {extra}')
@@ -128,8 +156,8 @@ def build_nft_rules():
         lines.append('    }')
         return '\n'.join(lines)
 
-    set_tcp  = _set_block('web_tcp_ports',    'inet_service', '',              tcp_text)
-    set_udp  = _set_block('web_udp_ports',    'inet_service', '',              udp_text)
+    set_tcp  = _set_block('web_tcp_ports',    'inet_service', '',               tcp_text)
+    set_udp  = _set_block('web_udp_ports',    'inet_service', '',               udp_text)
     set_wl   = _set_block('web_whitelist_v4', 'ipv4_addr',    'flags interval', whitelist_text)
     set_bl   = _set_block('web_blacklist_v4', 'ipv4_addr',    'flags interval', blacklist_text)
 
@@ -155,10 +183,8 @@ def build_nft_rules():
 def ensure_firewall_dirs():
     generated_dir = Path('generated')
     backups_dir = Path('generated/backups')
-
     generated_dir.mkdir(exist_ok=True)
     backups_dir.mkdir(exist_ok=True)
-
     return generated_dir, backups_dir
 
 
@@ -178,11 +204,9 @@ def firewall_apply_command():
 def get_firewall_paths():
     generated_dir = Path('generated')
     generated_dir.mkdir(exist_ok=True)
-
     generated_file = generated_dir / 'butler.nft'
     target_file = Path(current_app.config.get('BUTLER_FIREWALL_TARGET', '/etc/nftables.d/butler.nft'))
     nftables_conf = Path(current_app.config.get('BUTLER_NFTABLES_CONF', '/etc/nftables.conf'))
-
     return generated_dir, generated_file, target_file, nftables_conf
 
 
@@ -195,39 +219,25 @@ def write_generated_rules_file():
 
 def run_command(command, error_prefix, timeout=10):
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f'{error_prefix}\nКоманда превысила timeout ({timeout}s).')
-
     if result.returncode != 0:
-        raise RuntimeError(
-            f'{error_prefix}\n' + (result.stderr.strip() or result.stdout.strip())
-        )
-
+        raise RuntimeError(f'{error_prefix}\n' + (result.stderr.strip() or result.stdout.strip()))
     return result
 
 
 def backup_existing_target_file(target_file):
     backup_dir = Path('generated/backups')
     backup_dir.mkdir(parents=True, exist_ok=True)
-
     timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     backup_file = backup_dir / f'butler-target-backup-{timestamp}.nft'
-
     exists_result = subprocess.run(
         ['sudo', '-n', 'test', '-f', str(target_file)],
-        capture_output=True,
-        text=True,
-        timeout=5
+        capture_output=True, text=True, timeout=5
     )
     if exists_result.returncode != 0:
         return None
-
     read_result = run_command(
         ['sudo', '-n', 'cat', str(target_file)],
         'Не удалось прочитать target-файл для backup:'
@@ -238,30 +248,16 @@ def backup_existing_target_file(target_file):
 
 def apply_firewall_rules():
     _, generated_file, target_file, nftables_conf = get_firewall_paths()
-
     write_generated_rules_file()
     backup_file = backup_existing_target_file(target_file)
-
-    run_command(
-        ['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
-        'Не удалось создать каталог для target-файла:'
-    )
-
-    run_command(
-        ['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
-        'Не удалось установить target-файл:'
-    )
-
-    run_command(
-        ['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
-        'Проверка nftables-конфига не прошла:'
-    )
-
-    run_command(
-        ['sudo', '-n', 'nft', '-f', str(nftables_conf)],
-        'Не удалось применить правила:'
-    )
-
+    run_command(['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
+                'Не удалось создать каталог для target-файла:')
+    run_command(['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
+                'Не удалось установить target-файл:')
+    run_command(['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
+                'Проверка nftables-конфига не прошла:')
+    run_command(['sudo', '-n', 'nft', '-f', str(nftables_conf)],
+                'Не удалось применить правила:')
     return generated_file, target_file, backup_file
 
 
@@ -299,32 +295,17 @@ def build_empty_butler_rules():
 
 def reset_firewall_rules():
     _, generated_file, target_file, nftables_conf = get_firewall_paths()
-
     backup_file = backup_existing_target_file(target_file)
-
     empty_rules = build_empty_butler_rules()
     generated_file.write_text(empty_rules, encoding='utf-8')
-
-    run_command(
-        ['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
-        'Не удалось создать каталог для target-файла:'
-    )
-
-    run_command(
-        ['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
-        'Не удалось установить reset target-файл:'
-    )
-
-    run_command(
-        ['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
-        'Проверка reset-конфига не прошла:'
-    )
-
-    run_command(
-        ['sudo', '-n', 'nft', '-f', str(nftables_conf)],
-        'Не удалось сбросить Butler-правила:'
-    )
-
+    run_command(['sudo', '-n', 'mkdir', '-p', str(target_file.parent)],
+                'Не удалось создать каталог для target-файла:')
+    run_command(['sudo', '-n', 'install', '-m', '0644', str(generated_file), str(target_file)],
+                'Не удалось установить reset target-файл:')
+    run_command(['sudo', '-n', 'nft', '-c', '-f', str(nftables_conf)],
+                'Проверка reset-конфига не прошла:')
+    run_command(['sudo', '-n', 'nft', '-f', str(nftables_conf)],
+                'Не удалось сбросить Butler-правила:')
     return target_file, backup_file
 
 
@@ -338,7 +319,54 @@ def firewall_reset_command():
             click.echo(f'Backup сохранён в: {backup_file}')
     except Exception as exc:
         raise click.ClickException(str(exc))
-    
+
+
+# ---------------------------------------------------------------------------
+# Log line parser — supports nftables (BUTLER) and UFW formats
+# ---------------------------------------------------------------------------
+
+_RE_SRC = re.compile(r'SRC=(\S+)')
+_RE_DPT = re.compile(r'DPT=(\d+)')
+_RE_TS  = re.compile(r'^(\w{3}\s+\d+\s+\d+:\d+:\d+)')
+_RE_NFT = re.compile(r'kernel:.*BUTLER\b')
+_RE_UFW = re.compile(r'kernel:.*\[UFW\s+(?:BLOCK|ALLOW|LIMIT|AUDIT)\]')
+
+
+def parse_log_line(line):
+    """
+    Разобрать одну строку лога из journald / /var/log/kern.log.
+
+    Поддерживаемые форматы:
+      nftables: "... kernel: BUTLER IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ..."
+      UFW:      "... kernel: [UFW BLOCK] IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ..."
+
+    Возвращает dict {ip, port, ts_raw} или None если строка не является
+    распознанным событием firewall.
+    """
+    if not (_RE_NFT.search(line) or _RE_UFW.search(line)):
+        return None
+
+    m_src = _RE_SRC.search(line)
+    m_dpt = _RE_DPT.search(line)
+    if not (m_src and m_dpt):
+        return None
+
+    try:
+        ip = str(ipaddress.ip_address(m_src.group(1)))
+    except ValueError:
+        return None
+
+    m_ts = _RE_TS.search(line)
+    return {'ip': ip, 'port': int(m_dpt.group(1)), 'ts_raw': m_ts.group(1) if m_ts else None}
+
+
+# Обратная совместимость
+parse_nft_log_line = parse_log_line
+
+
+# ---------------------------------------------------------------------------
+# Routes — dashboard
+# ---------------------------------------------------------------------------
 
 @bp.route('/')
 @login_required
@@ -354,19 +382,24 @@ def index():
     return render_template('index.html', stats=stats, mode=mode)
 
 
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+
 @bp.route('/services', methods=['GET', 'POST'])
 @login_required
 def services():
     db = get_db()
 
     if request.method == 'POST':
-        name = request.form['name'].strip()
-        ports_raw = request.form['ports_raw'].strip()
-        protocol = request.form['protocol'].strip() or 'tcp'
+        _check_csrf()
+        name        = request.form['name'].strip()
+        ports_raw   = request.form['ports_raw'].strip()
+        protocol    = request.form['protocol'].strip() or 'tcp'
         description = request.form['description'].strip()
 
         error = None
-        port = None  # первый порт из списка (для UNIQUE)
+        port = None
         parsed_ports = []
 
         if not name:
@@ -378,12 +411,11 @@ def services():
             if not parsed_ports:
                 error = 'Не удалось распознать порты. Примеры: 8080 или 80, 443 или 8000-8100'
             else:
-                port = parsed_ports[0]  # первый порт — ключ UNIQUE
+                port = parsed_ports[0]
 
         if error is None:
             existing_service = db.execute(
-                'SELECT id FROM services WHERE port = ?',
-                (port,)
+                'SELECT id FROM services WHERE port = ?', (port,)
             ).fetchone()
             if existing_service is not None:
                 error = f'Порт {port} уже занят другим сервисом.'
@@ -420,6 +452,7 @@ def edit_service(service_id):
         return redirect(url_for('main.services'))
 
     if request.method == 'POST':
+        _check_csrf()
         name        = request.form['name'].strip()
         ports_raw   = request.form['ports_raw'].strip()
         protocol    = request.form['protocol'].strip() or 'tcp'
@@ -459,7 +492,6 @@ def edit_service(service_id):
             return redirect(url_for('main.services'))
 
         flash(error, 'error')
-        # Возвращаем введённые данные обратно в форму
         service = {'id': service_id, 'name': name, 'ports_raw': ports_raw,
                    'protocol': protocol, 'description': description}
 
@@ -469,13 +501,9 @@ def edit_service(service_id):
 @bp.route('/services/<int:service_id>/delete', methods=['POST'])
 @login_required
 def delete_service(service_id):
+    _check_csrf()
     db = get_db()
-
-    service = db.execute(
-        'SELECT * FROM services WHERE id = ?',
-        (service_id,)
-    ).fetchone()
-
+    service = db.execute('SELECT * FROM services WHERE id = ?', (service_id,)).fetchone()
     if service is None:
         flash('Сервис не найден.', 'error')
         return redirect(url_for('main.services'))
@@ -486,49 +514,18 @@ def delete_service(service_id):
         ('delete', 'service', f"{service['name']}:{service['port']}", 'Сервис удалён')
     )
     db.commit()
-
     flash(f'Сервис "{service["name"]}" удалён.', 'success')
     return redirect(url_for('main.services'))
 
 
 # ---------------------------------------------------------------------------
-# Парсер логов nftables
+# Attempts / log import
 # ---------------------------------------------------------------------------
-
-def parse_nft_log_line(line):
-    """
-    Разобрать одну строку лога nftables из journald / /var/log/kern.log.
-    Ожидаемый формат (пример):
-      Jun  5 10:23:01 hostname kernel: BUTLER_DROP: IN=eth0 OUT= ... SRC=1.2.3.4 DST=10.0.0.1 ... PROTO=TCP ... DPT=8011 ...
-    Возвращает dict {ip, port, ts} или None.
-    """
-    import re
-    m_src  = re.search(r'SRC=(\S+)',  line)
-    m_dpt  = re.search(r'DPT=(\d+)',  line)
-    m_ts   = re.search(
-        r'^(\w{3}\s+\d+\s+\d+:\d+:\d+)',
-        line
-    )
-    if not (m_src and m_dpt):
-        return None
-    ip_raw = m_src.group(1)
-    port   = int(m_dpt.group(1))
-    ts_raw = m_ts.group(1) if m_ts else None
-    # Проверим что IP валидный
-    try:
-        ip = str(ipaddress.ip_address(ip_raw))
-    except ValueError:
-        return None
-    return {'ip': ip, 'port': port, 'ts_raw': ts_raw}
-
 
 @bp.route('/attempts/import-log', methods=['POST'])
 @login_required
 def import_attempts_from_log():
-    """
-    Импортировать попытки из файла лога.
-    Источник: поле формы log_source ('journal' или 'file') + путь/текст.
-    """
+    _check_csrf()
     db = get_db()
     log_text = ''
     source = request.form.get('log_source', 'text')
@@ -556,7 +553,6 @@ def import_attempts_from_log():
     else:
         log_text = request.form.get('log_text', '')
 
-    # Найдём все сервисы для сопоставления портов (с учётом мультипорт)
     services_by_port = {}
     for row in db.execute('SELECT port, ports_raw, name FROM services').fetchall():
         ports_raw_val = row['ports_raw'] or str(row['port'])
@@ -565,7 +561,7 @@ def import_attempts_from_log():
 
     added = 0
     for line in log_text.splitlines():
-        parsed = parse_nft_log_line(line)
+        parsed = parse_log_line(line)
         if parsed is None:
             continue
         ip   = parsed['ip']
@@ -597,15 +593,14 @@ def import_attempts_from_log():
 @bp.route('/attempts/<int:attempt_id>/allow', methods=['POST'])
 @login_required
 def allow_attempt(attempt_id):
+    _check_csrf()
     db = get_db()
     row = db.execute('SELECT * FROM attempts WHERE id = ?', (attempt_id,)).fetchone()
     if row is None:
         flash('Попытка не найдена.', 'error')
         return redirect(url_for('main.attempts'))
 
-    ip_raw = row['ip_address']
-    ip = str(ipaddress.ip_network(ip_raw, strict=False))  # нормализуем
-    # Проверим дубликат в whitelist
+    ip = str(ipaddress.ip_network(row['ip_address'], strict=False))
     exists = db.execute(
         'SELECT id FROM whitelist_entries WHERE ip_address = ? AND enabled = 1', (ip,)
     ).fetchone()
@@ -613,14 +608,9 @@ def allow_attempt(attempt_id):
         flash(f'IP {ip} уже в белом списке.', 'error')
         return redirect(url_for('main.attempts'))
 
-    db.execute(
-        'INSERT INTO whitelist_entries (ip_address, comment) VALUES (?, ?)',
-        (ip, f'Добавлен из попыток (порт {row["port"]})')
-    )
-    db.execute(
-        'UPDATE attempts SET status = ? WHERE id = ?',
-        ('allowed', attempt_id)
-    )
+    db.execute('INSERT INTO whitelist_entries (ip_address, comment) VALUES (?, ?)',
+               (ip, f'Добавлен из попыток (порт {row["port"]})'))
+    db.execute('UPDATE attempts SET status = ? WHERE id = ?', ('allowed', attempt_id))
     db.execute(
         'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
         ('allow', 'ip', ip, f'Разрешён из попыток, порт {row["port"]}')
@@ -633,14 +623,14 @@ def allow_attempt(attempt_id):
 @bp.route('/attempts/<int:attempt_id>/block', methods=['POST'])
 @login_required
 def block_attempt(attempt_id):
+    _check_csrf()
     db = get_db()
     row = db.execute('SELECT * FROM attempts WHERE id = ?', (attempt_id,)).fetchone()
     if row is None:
         flash('Попытка не найдена.', 'error')
         return redirect(url_for('main.attempts'))
 
-    ip_raw = row['ip_address']
-    ip = str(ipaddress.ip_network(ip_raw, strict=False))  # нормализуем
+    ip = str(ipaddress.ip_network(row['ip_address'], strict=False))
     exists = db.execute(
         'SELECT id FROM blacklist_entries WHERE ip_address = ? AND enabled = 1', (ip,)
     ).fetchone()
@@ -652,10 +642,7 @@ def block_attempt(attempt_id):
         'INSERT INTO blacklist_entries (ip_address, reason, comment) VALUES (?, ?, ?)',
         (ip, 'Заблокирован из попыток', f'Порт {row["port"]}, попыток: {row["attempts_count"]}')
     )
-    db.execute(
-        'UPDATE attempts SET status = ? WHERE id = ?',
-        ('blocked', attempt_id)
-    )
+    db.execute('UPDATE attempts SET status = ? WHERE id = ?', ('blocked', attempt_id))
     db.execute(
         'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
         ('block', 'ip', ip, f'Заблокирован из попыток, порт {row["port"]}')
@@ -671,9 +658,8 @@ def attempts():
     db = get_db()
     rows = db.execute('SELECT * FROM attempts ORDER BY last_seen DESC, id DESC').fetchall()
 
-    # Собрать подписи к адресам: сначала белый список, потом чёрный
-    # Нормализуем ключи: 1.2.3.4/32 → 1.2.3.4 для сопоставления с attempts.ip_address
     ip_labels = {}
+
     def _norm_ip_key(raw):
         try:
             net = ipaddress.ip_network(raw, strict=False)
@@ -693,15 +679,20 @@ def attempts():
     return render_template('attempts.html', attempts=rows, ip_labels=ip_labels)
 
 
+# ---------------------------------------------------------------------------
+# Whitelist
+# ---------------------------------------------------------------------------
+
 @bp.route('/whitelist', methods=['GET', 'POST'])
 @login_required
 def whitelist():
     db = get_db()
 
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
-        owner_name = request.form['owner_name'].strip()
-        comment = request.form['comment'].strip()
+        owner_name     = request.form['owner_name'].strip()
+        comment        = request.form['comment'].strip()
 
         error = None
         normalized_ip = None
@@ -718,7 +709,6 @@ def whitelist():
                 'SELECT id FROM whitelist_entries WHERE ip_address = ? AND enabled = 1',
                 (normalized_ip,)
             ).fetchone()
-
             if existing_entry is not None:
                 error = f'IP-адрес {normalized_ip} уже есть в белом списке.'
 
@@ -749,27 +739,21 @@ def whitelist():
 @bp.route('/whitelist/<int:entry_id>/delete', methods=['POST'])
 @login_required
 def delete_whitelist_entry(entry_id):
+    _check_csrf()
     db = get_db()
-
     entry = db.execute(
-        'SELECT * FROM whitelist_entries WHERE id = ? AND enabled = 1',
-        (entry_id,)
+        'SELECT * FROM whitelist_entries WHERE id = ? AND enabled = 1', (entry_id,)
     ).fetchone()
-
     if entry is None:
         flash('Запись белого списка не найдена.', 'error')
         return redirect(url_for('main.whitelist'))
 
-    db.execute(
-        'UPDATE whitelist_entries SET enabled = 0 WHERE id = ?',
-        (entry_id,)
-    )
+    db.execute('UPDATE whitelist_entries SET enabled = 0 WHERE id = ?', (entry_id,))
     db.execute(
         'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
         ('delete', 'whitelist', entry['ip_address'], 'Запись отключена в белом списке')
     )
     db.commit()
-
     flash(f'IP {entry["ip_address"]} удалён из белого списка.', 'success')
     return redirect(url_for('main.whitelist'))
 
@@ -778,20 +762,18 @@ def delete_whitelist_entry(entry_id):
 @login_required
 def edit_whitelist_entry(entry_id):
     db = get_db()
-
     entry = db.execute(
-        'SELECT * FROM whitelist_entries WHERE id = ? AND enabled = 1',
-        (entry_id,)
+        'SELECT * FROM whitelist_entries WHERE id = ? AND enabled = 1', (entry_id,)
     ).fetchone()
-
     if entry is None:
         flash('Запись белого списка не найдена.', 'error')
         return redirect(url_for('main.whitelist'))
 
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
-        owner_name = request.form['owner_name'].strip()
-        comment = request.form['comment'].strip()
+        owner_name     = request.form['owner_name'].strip()
+        comment        = request.form['comment'].strip()
 
         error = None
         normalized_ip = None
@@ -808,17 +790,12 @@ def edit_whitelist_entry(entry_id):
                 'SELECT id FROM whitelist_entries WHERE ip_address = ? AND enabled = 1 AND id != ?',
                 (normalized_ip, entry_id)
             ).fetchone()
-
             if existing_entry is not None:
                 error = f'IP-адрес {normalized_ip} уже есть в белом списке.'
 
         if error is None:
             db.execute(
-                '''
-                UPDATE whitelist_entries
-                SET ip_address = ?, owner_name = ?, comment = ?
-                WHERE id = ?
-                ''',
+                'UPDATE whitelist_entries SET ip_address = ?, owner_name = ?, comment = ? WHERE id = ?',
                 (normalized_ip, owner_name, comment, entry_id)
             )
             db.execute(
@@ -826,27 +803,26 @@ def edit_whitelist_entry(entry_id):
                 ('update', 'whitelist', normalized_ip, 'Запись белого списка изменена')
             )
             db.commit()
-
             flash(f'Запись {normalized_ip} обновлена.', 'success')
             return redirect(url_for('main.whitelist'))
 
         flash(error, 'error')
-
-        entry = {
-            'id': entry_id,
-            'ip_address': ip_address_raw,
-            'owner_name': owner_name,
-            'comment': comment
-        }
+        entry = {'id': entry_id, 'ip_address': ip_address_raw,
+                 'owner_name': owner_name, 'comment': comment}
 
     return render_template('whitelist_edit.html', entry=entry)
 
+
+# ---------------------------------------------------------------------------
+# Blacklist
+# ---------------------------------------------------------------------------
 
 @bp.route('/blacklist', methods=['GET', 'POST'])
 @login_required
 def blacklist():
     db = get_db()
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
         reason  = request.form['reason'].strip()
         comment = request.form['comment'].strip()
@@ -897,27 +873,21 @@ def blacklist():
 @bp.route('/blacklist/<int:entry_id>/delete', methods=['POST'])
 @login_required
 def delete_blacklist_entry(entry_id):
+    _check_csrf()
     db = get_db()
-
     entry = db.execute(
-        'SELECT * FROM blacklist_entries WHERE id = ? AND enabled = 1',
-        (entry_id,)
+        'SELECT * FROM blacklist_entries WHERE id = ? AND enabled = 1', (entry_id,)
     ).fetchone()
-
     if entry is None:
         flash('Запись чёрного списка не найдена.', 'error')
         return redirect(url_for('main.blacklist'))
 
-    db.execute(
-        'UPDATE blacklist_entries SET enabled = 0 WHERE id = ?',
-        (entry_id,)
-    )
+    db.execute('UPDATE blacklist_entries SET enabled = 0 WHERE id = ?', (entry_id,))
     db.execute(
         'INSERT INTO audit_log (action, target_type, target_value, comment) VALUES (?, ?, ?, ?)',
         ('delete', 'blacklist', entry['ip_address'], 'Запись отключена в чёрном списке')
     )
     db.commit()
-
     flash(f'IP {entry["ip_address"]} удалён из чёрного списка.', 'success')
     return redirect(url_for('main.blacklist'))
 
@@ -926,19 +896,17 @@ def delete_blacklist_entry(entry_id):
 @login_required
 def edit_blacklist_entry(entry_id):
     db = get_db()
-
     entry = db.execute(
-        'SELECT * FROM blacklist_entries WHERE id = ? AND enabled = 1',
-        (entry_id,)
+        'SELECT * FROM blacklist_entries WHERE id = ? AND enabled = 1', (entry_id,)
     ).fetchone()
-
     if entry is None:
         flash('Запись чёрного списка не найдена.', 'error')
         return redirect(url_for('main.blacklist'))
 
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
-        reason = request.form['reason'].strip()
+        reason  = request.form['reason'].strip()
         comment = request.form['comment'].strip()
 
         error = None
@@ -956,17 +924,12 @@ def edit_blacklist_entry(entry_id):
                 'SELECT id FROM blacklist_entries WHERE ip_address = ? AND enabled = 1 AND id != ?',
                 (normalized_ip, entry_id)
             ).fetchone()
-
             if existing_entry is not None:
                 error = f'IP-адрес {normalized_ip} уже есть в чёрном списке.'
 
         if error is None:
             db.execute(
-                '''
-                UPDATE blacklist_entries
-                SET ip_address = ?, reason = ?, comment = ?
-                WHERE id = ?
-                ''',
+                'UPDATE blacklist_entries SET ip_address = ?, reason = ?, comment = ? WHERE id = ?',
                 (normalized_ip, reason, comment, entry_id)
             )
             db.execute(
@@ -974,21 +937,19 @@ def edit_blacklist_entry(entry_id):
                 ('update', 'blacklist', normalized_ip, 'Запись чёрного списка изменена')
             )
             db.commit()
-
             flash(f'Запись {normalized_ip} обновлена.', 'success')
             return redirect(url_for('main.blacklist'))
 
         flash(error, 'error')
-
-        entry = {
-            'id': entry_id,
-            'ip_address': ip_address_raw,
-            'reason': reason,
-            'comment': comment
-        }
+        entry = {'id': entry_id, 'ip_address': ip_address_raw,
+                 'reason': reason, 'comment': comment}
 
     return render_template('blacklist_edit.html', entry=entry)
 
+
+# ---------------------------------------------------------------------------
+# Audit log
+# ---------------------------------------------------------------------------
 
 @bp.route('/audit-log')
 @login_required
@@ -999,17 +960,14 @@ def audit_log():
 
 
 # ---------------------------------------------------------------------------
-# Сброс соединений через conntrack
+# Conntrack helpers
 # ---------------------------------------------------------------------------
 
 def _conntrack_drop_ip(ip):
     """Сбросить все соединения с указанного IP. Возвращает (ok, err_text)."""
     try:
-        r = subprocess.run(
-            ['sudo', '-n', 'conntrack', '-D', '-s', ip],
-            capture_output=True, text=True, timeout=10
-        )
-        # conntrack возвращает код 1 если записей не было — это не ошибка
+        subprocess.run(['sudo', '-n', 'conntrack', '-D', '-s', ip],
+                       capture_output=True, text=True, timeout=10)
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -1018,10 +976,8 @@ def _conntrack_drop_ip(ip):
 def _conntrack_drop_port(port, proto='tcp'):
     """Сбросить все соединения на указанный порт."""
     try:
-        r = subprocess.run(
-            ['sudo', '-n', 'conntrack', '-D', '-p', proto, '--dport', str(port)],
-            capture_output=True, text=True, timeout=10
-        )
+        subprocess.run(['sudo', '-n', 'conntrack', '-D', '-p', proto, '--dport', str(port)],
+                       capture_output=True, text=True, timeout=10)
         return True, None
     except Exception as exc:
         return False, str(exc)
@@ -1030,7 +986,7 @@ def _conntrack_drop_port(port, proto='tcp'):
 @bp.route('/conntrack/drop-ips', methods=['POST'])
 @login_required
 def conntrack_drop_ips():
-    """Сбросить соединения по выбранным IP (чекбоксы) или всем."""
+    _check_csrf()
     db = get_db()
     drop_all = request.form.get('drop_all') == '1'
 
@@ -1067,7 +1023,7 @@ def conntrack_drop_ips():
 @bp.route('/conntrack/drop-ports', methods=['POST'])
 @login_required
 def conntrack_drop_ports():
-    """Сбросить соединения по выбранным портам или всем."""
+    _check_csrf()
     db = get_db()
     drop_all = request.form.get('drop_all') == '1'
 
@@ -1078,13 +1034,11 @@ def conntrack_drop_ports():
         if raw:
             placeholders = ','.join(['?'] * len(raw))
             rows = db.execute(
-                f'SELECT port, ports_raw, protocol FROM services WHERE port IN ({placeholders})',
-                raw
+                f'SELECT port, ports_raw, protocol FROM services WHERE port IN ({placeholders})', raw
             ).fetchall()
         else:
             rows = []
 
-    # Разворачиваем все порты включая мультипорт
     ports = []
     for r in rows:
         proto = r['protocol'] or 'tcp'
@@ -1115,12 +1069,13 @@ def conntrack_drop_ports():
 
 
 # ---------------------------------------------------------------------------
-# Переключатель режима
+# Firewall settings / apply / reset
 # ---------------------------------------------------------------------------
 
 @bp.route('/settings/firewall-mode', methods=['POST'])
 @login_required
 def set_firewall_mode():
+    _check_csrf()
     new_mode = request.form.get('mode', 'whitelist')
     if new_mode not in ('whitelist', 'blacklist'):
         flash('Неверный режим.', 'error')
@@ -1146,71 +1101,54 @@ def firewall():
 @bp.route('/firewall/export', methods=['POST'])
 @login_required
 def export_firewall():
-    rules, _, _ = build_nft_rules()
-
-    output_dir = Path('generated')
-    output_dir.mkdir(exist_ok=True)
-
-    output_file = output_dir / 'butler.nft'
-    output_file.write_text(rules, encoding='utf-8')
-
-    flash(f'Файл правил сохранён: {output_file}', 'success')
+    _check_csrf()
+    generated_file = write_generated_rules_file()
+    flash(f'Файл правил сохранён: {generated_file}', 'success')
     return redirect(url_for('main.firewall'))
 
 
 @bp.route('/firewall/apply', methods=['POST'])
 @login_required
 def firewall_apply():
+    _check_csrf()
     confirm = request.form.get('confirm_apply')
     if confirm != 'yes':
         flash('Применение отменено: не подтверждено.', 'error')
         return redirect(url_for('main.firewall'))
     try:
-        # Перегенерировать с актуальным режимом
         write_generated_rules_file()
         generated_file, target_file, backup_file = apply_firewall_rules()
-
+        msg = f'Правила применены. Generated: {generated_file}. Target: {target_file}.'
         if backup_file:
-            flash(
-                f'Правила применены. Generated: {generated_file}. Target: {target_file}. Backup: {backup_file}',
-                'success'
-            )
-        else:
-            flash(
-                f'Правила применены. Generated: {generated_file}. Target: {target_file}',
-                'success'
-            )
+            msg += f' Backup: {backup_file}.'
+        flash(msg, 'success')
     except Exception as exc:
         flash(str(exc), 'error')
-
     return redirect(url_for('main.firewall'))
 
 
 @bp.route('/firewall/reset', methods=['POST'])
 @login_required
 def firewall_reset():
+    _check_csrf()
     confirm = request.form.get('confirm_reset')
     if confirm != 'yes':
         flash('Сброс отменён: не подтверждён.', 'error')
         return redirect(url_for('main.firewall'))
     try:
         target_file, backup_file = reset_firewall_rules()
-
+        msg = f'Butler-правила сброшены. Target: {target_file}.'
         if backup_file:
-            flash(
-                f'Butler-правила сброшены. Target: {target_file}. Backup: {backup_file}',
-                'success'
-            )
-        else:
-            flash(
-                f'Butler-правила сброшены. Target: {target_file}',
-                'success'
-            )
+            msg += f' Backup: {backup_file}.'
+        flash(msg, 'success')
     except Exception as exc:
         flash(str(exc), 'error')
-
     return redirect(url_for('main.firewall'))
 
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
 
 @bp.route('/login', methods=['GET', 'POST'])
 def login():
@@ -1220,14 +1158,14 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '')
         password = request.form.get('password', '')
-
         if check_auth(username, password):
             session.clear()
             session['authenticated'] = True
             session['username'] = username
+            # Регенерируем CSRF-токен после успешного входа
+            session['csrf_token'] = _secrets.token_hex(32)
             flash('Вы успешно вошли в систему.', 'success')
             return redirect(url_for('main.index'))
-
         flash('Неверный логин или пароль.', 'error')
 
     return render_template('login.html')
@@ -1238,5 +1176,3 @@ def logout():
     session.clear()
     flash('Вы вышли из системы.', 'success')
     return redirect(url_for('main.login'))
-
-

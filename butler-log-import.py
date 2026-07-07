@@ -6,6 +6,10 @@ Butler — автосбор попыток подключений из journald.
 обработанной записи (метка хранится в state-файле).
 Фильтрует строки по портам из таблицы сервисов Butler.
 
+Поддерживаемые форматы firewall-логов:
+  - nftables: строки с меткой 'BUTLER' (prefix "BUTLER ")
+  - UFW:      строки с [UFW BLOCK/ALLOW/LIMIT/AUDIT]
+
 Запускается systemd-таймером каждые 5 минут.
 
 Использование:
@@ -86,21 +90,38 @@ def fetch_journal_lines(cursor: str | None, lines: int) -> tuple[list[str], str 
     return lines_out, new_cursor
 
 
-RE_SRC = re.compile(r'SRC=(\S+)')
-RE_DPT = re.compile(r'DPT=(\d+)')
+# Compiled regexes — module level for performance
+_RE_NFT = re.compile(r'kernel:.*BUTLER\b')
+_RE_UFW = re.compile(r'kernel:.*\[UFW\s+(?:BLOCK|ALLOW|LIMIT|AUDIT)\]')
+_RE_SRC = re.compile(r'SRC=(\S+)')
+_RE_DPT = re.compile(r'DPT=(\d+)')
 
 
 def parse_line(line: str) -> dict | None:
-    m_src = RE_SRC.search(line)
-    m_dpt = RE_DPT.search(line)
+    """
+    Разобрать строку firewall-лога.
+
+    Поддерживает:
+      nftables: "... kernel: BUTLER IN=eth0 ... SRC=x.x.x.x ... DPT=N ..."
+      UFW:      "... kernel: [UFW BLOCK] IN=eth0 ... SRC=x.x.x.x ... DPT=N ..."
+
+    Возвращает dict {ip, port} или None.
+    """
+    if not (_RE_NFT.search(line) or _RE_UFW.search(line)):
+        return None
+
+    m_src = _RE_SRC.search(line)
+    m_dpt = _RE_DPT.search(line)
     if not (m_src and m_dpt):
         return None
+
     ip_raw = m_src.group(1)
     port   = int(m_dpt.group(1))
     try:
         ip = str(ipaddress.ip_address(ip_raw))
     except ValueError:
         return None
+
     return {'ip': ip, 'port': port}
 
 
