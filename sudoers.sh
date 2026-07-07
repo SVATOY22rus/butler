@@ -89,8 +89,13 @@ fi
 ALL_BINS=("$UFW_BIN" "$MKDIR_BIN" "$INSTALL_BIN" "$TEST_BIN" "$CAT_BIN" "$JOURNALCTL_BIN")
 [[ -n "$CONNTRACK_BIN" ]] && ALL_BINS+=("$CONNTRACK_BIN")
 
-# Строка NOPASSWD для sudoers
-NOPASSWD_LIST=$(printf '%s, ' "${ALL_BINS[@]}")
+# Строка NOPASSWD для sudoers.
+# ВАЖНО: sudo матчит команду ВМЕСТЕ С АРГУМЕНТАМИ. Правило вида
+#   NOPASSWD: /usr/sbin/ufw
+# (и точно так же /usr/sbin/ufw "") разрешает запуск ufw ТОЛЬКО без
+# аргументов, поэтому `sudo -n ufw allow 22/tcp` требовал пароль.
+# Чтобы разрешить ЛЮБЫЕ аргументы, нужен wildcard '*' после бинаря.
+NOPASSWD_LIST=$(printf '%s *, ' "${ALL_BINS[@]}")
 NOPASSWD_LIST="${NOPASSWD_LIST%, }"  # убрать трейлинг запятую
 
 # Строки !requiretty для каждой команды
