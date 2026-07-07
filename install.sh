@@ -75,6 +75,40 @@ fi
 [[ -d "$WHEELS_DIR" ]]  || die "Папка .butler/wheels/ не найдена."
 
 # ---------------------------------------------------------------------------
+# Проверка UFW
+#
+# Butler управляет фаерволом только через UFW. Сами ничего не ставим
+# и не включаем (безопаснее на живом удалённом сервере) — только
+# проверяем наличие и подсказываем команду установки под текущую ОС.
+# ---------------------------------------------------------------------------
+if ! PATH="$PATH:/usr/sbin:/sbin" command -v ufw > /dev/null 2>&1; then
+  # Определяем менеджер пакетов по ID из /etc/os-release.
+  _os_id=""
+  [[ -f /etc/os-release ]] && _os_id="$(. /etc/os-release 2>/dev/null; echo "${ID:-} ${ID_LIKE:-}")"
+  case "$_os_id" in
+    *astra*|*debian*|*ubuntu*) UFW_INSTALL_CMD="sudo apt update && sudo apt install -y ufw" ;;
+    *fedora*|*rhel*|*centos*)  UFW_INSTALL_CMD="sudo dnf install -y ufw" ;;
+    *suse*)                    UFW_INSTALL_CMD="sudo zypper install -y ufw" ;;
+    *arch*)                    UFW_INSTALL_CMD="sudo pacman -S --noconfirm ufw" ;;
+    *)                         UFW_INSTALL_CMD="sudo apt install -y ufw   # либо менеджер пакетов вашей ОС" ;;
+  esac
+  warn "UFW не найден — Butler не сможет применять правила фаервола."
+  warn "  Установите его вручную:"
+  info "  ${UFW_INSTALL_CMD}"
+  warn "  Затем разрешите SSH и порт панели ДО включения (защита от self-lockout):"
+  info "  sudo ufw allow 22/tcp && sudo ufw allow ${BUTLER_PORT:-5050}/tcp"
+  warn "  Включать UFW не обязательно вручную — Butler сам включит его при первом Apply."
+  echo ""
+else
+  UFW_STATUS="$(PATH="$PATH:/usr/sbin:/sbin" sudo -n ufw status 2>/dev/null | head -n1 || true)"
+  if [[ "$UFW_STATUS" == *inactive* ]]; then
+    ok "UFW установлен, но выключен — Butler включит его при первом Apply (SSH и панель будут разрешены заранее)."
+  else
+    ok "UFW установлен."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Конфиг
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ENV_FILE" ]]; then

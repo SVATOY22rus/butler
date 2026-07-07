@@ -47,6 +47,17 @@ BUTLER_TAG = 'butler'
 SSH_PORT = 22
 
 
+def _ufw_cmd(*args) -> list:
+    """Собрать команду ufw с sudo -n.
+
+    Сервис Butler работает под обычным пользователем, а ufw требует root.
+    sudoers.sh выдаёт этому пользователю NOPASSWD на ufw, поэтому вызываем
+    через `sudo -n` (без пароля, без запроса tty). Если процесс уже root —
+    sudo просто выполнит команду напрямую без лишних вопросов.
+    """
+    return ['sudo', '-n', _UFW, *args]
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -157,17 +168,17 @@ def _rule_commands():
         if mode == 'whitelist':
             for ip in whitelist_ips:
                 commands.append(
-                    [_UFW, 'allow', 'from', ip, 'to', 'any', 'port', str(port),
-                     'proto', proto, 'comment', BUTLER_TAG]
+                    _ufw_cmd('allow', 'from', ip, 'to', 'any', 'port', str(port),
+                             'proto', proto, 'comment', BUTLER_TAG)
                 )
-            commands.append([_UFW, 'deny', f'{port}/{proto}', 'comment', BUTLER_TAG])
+            commands.append(_ufw_cmd('deny', f'{port}/{proto}', 'comment', BUTLER_TAG))
         else:  # blacklist
             for ip in blacklist_ips:
                 commands.append(
-                    [_UFW, 'deny', 'from', ip, 'to', 'any', 'port', str(port),
-                     'proto', proto, 'comment', BUTLER_TAG]
+                    _ufw_cmd('deny', 'from', ip, 'to', 'any', 'port', str(port),
+                             'proto', proto, 'comment', BUTLER_TAG)
                 )
-            commands.append([_UFW, 'allow', f'{port}/{proto}', 'comment', BUTLER_TAG])
+            commands.append(_ufw_cmd('allow', f'{port}/{proto}', 'comment', BUTLER_TAG))
 
     return commands, mode, skipped
 
@@ -189,8 +200,8 @@ def build_rules() -> tuple[str, str, list]:
     if not commands:
         lines.append('# (нет сервисов или списков — правил не будет)')
     for cmd in commands:
-        # cmd[0] — путь к ufw; печатаем как "ufw ..."
-        lines.append('ufw ' + ' '.join(cmd[1:]))
+        # cmd = ['sudo','-n', _UFW, ...]; печатаем читаемо как "ufw ..."
+        lines.append('ufw ' + ' '.join(cmd[3:]))
     return '\n'.join(lines) + '\n', mode, skipped
 
 
@@ -223,7 +234,7 @@ def _list_butler_rule_numbers() -> list[int]:
     Удалять правила нужно от большего номера к меньшему, иначе нумерация
     сдвигается после каждого удаления.
     """
-    ok, out = _try_command([_UFW, 'status', 'numbered'])
+    ok, out = _try_command(_ufw_cmd('status', 'numbered'))
     if not ok:
         return []
     numbers = []
@@ -246,7 +257,7 @@ def _delete_butler_rules() -> int:
         if not numbers:
             break
         num = numbers[0]  # самый большой номер
-        ok, _out = _try_command([_UFW, '--force', 'delete', str(num)])
+        ok, _out = _try_command(_ufw_cmd('--force', 'delete', str(num)))
         if not ok:
             break
         deleted += 1
@@ -257,25 +268,37 @@ def _delete_butler_rules() -> int:
 
 
 def _ensure_enabled_and_protected() -> None:
-    """Гарантировать, что UFW включён и SSH + порт Butler разрешены.
+    """Гарантировать безопасные дефолты: UFW включён, SSH + порт Butler разрешены,
+    глобальная политика — deny incoming / allow outgoing.
 
-    ВАЖНО: не используем reset/disable. Просто idempotent-allow нужных портов
-    и включение UFW, если он выключен. `ufw allow` идемпотентен — повторное
-    правило UFW не дублирует (Skipping adding existing rule).
+    ВАЖНО: не используем reset/disable. Порядок критичен для защиты от self-lockout:
+      1. СНАЧАЛА явно allow на SSH (22) и порт панели — до смены default policy.
+      2. ЗАТЕМ default deny incoming / allow outgoing (чтобы whitelist без сервисов
+         реально закрывал остальное, а не оставлял всё открытым).
+      3. ПОСЛЕ этого enable, если UFW был неактивен.
+
+    `ufw allow` и `ufw default` идемпотентны — повторный вызов ничего не ломает.
     """
     butler_port = _get_butler_port()
 
-    # Разрешаем SSH и порт Butler ДО включения фаервола — защита от self-lockout.
-    # Эти правила без тега butler, чтобы чистка Butler их не удалила.
-    run_command([_UFW, 'allow', f'{SSH_PORT}/tcp'],
+    # Шаг 1. Разрешаем SSH и порт Butler ДО смены политики и включения —
+    # защита от self-lockout. Правила без тега butler, чтобы чистка их не снесла.
+    run_command(_ufw_cmd('allow', f'{SSH_PORT}/tcp'),
                 'Не удалось разрешить SSH (22/tcp):')
-    run_command([_UFW, 'allow', f'{butler_port}/tcp'],
+    run_command(_ufw_cmd('allow', f'{butler_port}/tcp'),
                 f'Не удалось защитить порт Butler ({butler_port}/tcp):')
 
-    # Включаем UFW, если он ещё не активен. --force не задаёт вопросов.
-    ok, out = _try_command([_UFW, 'status'])
+    # Шаг 2. Безопасные дефолтные политики. Даже при пустом списке сервисов
+    # входящий трафик будет закрыт (кроме явно разрешённых 22 и порта панели).
+    run_command(_ufw_cmd('default', 'deny', 'incoming'),
+                'Не удалось задать default deny incoming:')
+    run_command(_ufw_cmd('default', 'allow', 'outgoing'),
+                'Не удалось задать default allow outgoing:')
+
+    # Шаг 3. Включаем UFW, если он ещё не активен. --force не задаёт вопросов.
+    ok, out = _try_command(_ufw_cmd('status'))
     if ok and 'Status: active' not in out:
-        run_command([_UFW, '--force', 'enable'],
+        run_command(_ufw_cmd('--force', 'enable'),
                     'Не удалось включить UFW:')
 
 

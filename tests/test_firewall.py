@@ -223,3 +223,93 @@ def test_firewall_preview_endpoint(auth_client):
     r = auth_client.get('/firewall')
     assert r.status_code == 200
     assert b'ufw' in r.data.lower() or b'butler' in r.data.lower()
+
+
+# ──────────────────────────────
+# Вызов ufw через sudo -n (главный фикс "You need to be root")
+# ──────────────────────────────
+
+def test_ufw_cmd_prefixed_with_sudo():
+    """_ufw_cmd обязан всегда начинаться с 'sudo -n' — ufw требует root."""
+    from app.firewall import _ufw_cmd, _UFW
+    cmd = _ufw_cmd('status')
+    assert cmd[0] == 'sudo'
+    assert cmd[1] == '-n'
+    assert cmd[2] == _UFW
+    assert cmd[3] == 'status'
+
+
+def test_rule_commands_all_use_sudo(auth_client, app):
+    """Все сгенерированные команды ufw вызываются через sudo -n."""
+    add_service(auth_client, 'WEB', '80')
+    add_whitelist(auth_client, '192.168.1.1')
+    set_mode(auth_client, 'whitelist')
+
+    with app.app_context():
+        from app.firewall import _rule_commands
+        commands, _mode, _skipped = _rule_commands()
+
+    assert commands, 'ожидались правила'
+    for cmd in commands:
+        assert cmd[:2] == ['sudo', '-n'], f'команда без sudo -n: {cmd}'
+
+
+def test_ensure_enabled_sets_default_policies(auth_client, app, monkeypatch):
+    """_ensure_enabled_and_protected задаёт default deny incoming / allow outgoing
+    и разрешает SSH + порт панели, всё через sudo -n."""
+    import app.firewall as fw
+
+    called = []
+
+    def fake_run(command, error_prefix, timeout=15):
+        called.append(command)
+        class R:  # заглушка результата
+            returncode = 0
+            stdout = ''
+            stderr = ''
+        return R()
+
+    def fake_try(command, timeout=15):
+        # имитируем активный UFW, чтобы enable не вызывался
+        return True, 'Status: active'
+
+    monkeypatch.setattr(fw, 'run_command', fake_run)
+    monkeypatch.setattr(fw, '_try_command', fake_try)
+
+    with app.app_context():
+        fw._ensure_enabled_and_protected()
+
+    # Все run_command-вызовы идут через sudo -n
+    for cmd in called:
+        assert cmd[:2] == ['sudo', '-n'], f'команда без sudo -n: {cmd}'
+
+    flat = [' '.join(c[2:]) for c in called]
+    joined = '\n'.join(flat)
+    # SSH и порт панели разрешены
+    assert any('allow 22/tcp' in f for f in flat)
+    assert any('allow 5050/tcp' in f for f in flat)
+    # Дефолтные политики заданы
+    assert 'default deny incoming' in joined
+    assert 'default allow outgoing' in joined
+
+
+def test_ssh_and_panel_allowed_before_default_deny(auth_client, app, monkeypatch):
+    """Защита от self-lockout: allow SSH/панели ИДЁТ ДО default deny incoming."""
+    import app.firewall as fw
+    order = []
+
+    def fake_run(command, error_prefix, timeout=15):
+        order.append(' '.join(command[2:]))
+        class R:
+            returncode = 0; stdout = ''; stderr = ''
+        return R()
+
+    monkeypatch.setattr(fw, 'run_command', fake_run)
+    monkeypatch.setattr(fw, '_try_command', lambda c, timeout=15: (True, 'Status: active'))
+
+    with app.app_context():
+        fw._ensure_enabled_and_protected()
+
+    idx_allow_ssh = next(i for i, c in enumerate(order) if 'allow 22/tcp' in c)
+    idx_deny_default = next(i for i, c in enumerate(order) if 'default deny incoming' in c)
+    assert idx_allow_ssh < idx_deny_default, 'аllow SSH должен идти до default deny'
