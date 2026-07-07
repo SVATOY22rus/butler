@@ -3,6 +3,8 @@
 """
 import pytest
 
+from conftest import post
+
 
 SAMPLE_LOG = """\
 Jun  8 10:00:01 server kernel: BUTLER IN=eth0 OUT= MAC=... SRC=1.2.3.4 DST=5.5.5.5 LEN=60 TOS=0x00 PREC=0x00 TTL=50 ID=0 DF PROTO=TCP SPT=54321 DPT=80 WINDOW=65535 RES=0x00 SYN URGP=0
@@ -16,34 +18,45 @@ def test_attempts_page_loads(auth_client):
     assert r.status_code == 200
 
 
-def test_parse_nft_log_line(app):
-    """Парсер лога выделяет SRC и DPT из строки с префиксом BUTLER."""
-    with app.app_context():
-        from app.routes import parse_nft_log_line
-        line = 'Jun  8 10:00:01 server kernel: BUTLER IN=eth0 SRC=1.2.3.4 DST=5.5.5.5 PROTO=TCP SPT=54321 DPT=80'
-        result = parse_nft_log_line(line)
-        assert result is not None
-        assert result['ip'] == '1.2.3.4'
-        assert result['port'] == 80
+def test_parse_ufw_log_line(app):
+    """Парсер лога выделяет SRC и DPT из строки UFW."""
+    from logparse import parse_log_line
+    line = ('Jun  8 10:00:01 server kernel: [UFW BLOCK] IN=eth0 SRC=1.2.3.4 '
+            'DST=5.5.5.5 PROTO=TCP SPT=54321 DPT=80')
+    result = parse_log_line(line)
+    assert result is not None
+    assert result['ip'] == '1.2.3.4'
+    assert result['port'] == 80
 
 
-def test_parse_nft_log_line_requires_src_dpt(app):
-    """parse_nft_log_line возвращает None если нет SRC или DPT или IP невалиден."""
-    with app.app_context():
-        from app.routes import parse_nft_log_line
-        assert parse_nft_log_line('Jun  8 kernel: BUTLER IN=eth0 DPT=80') is None
-        assert parse_nft_log_line('Jun  8 kernel: BUTLER IN=eth0 SRC=1.2.3.4') is None
-        assert parse_nft_log_line('Jun  8 kernel: BUTLER IN=eth0 SRC=invalid DPT=80') is None
+def test_parse_log_line_legacy_butler(app):
+    """Legacy-префикс BUTLER всё ещё распознаётся."""
+    from logparse import parse_log_line
+    line = 'Jun  8 10:00:01 server kernel: BUTLER IN=eth0 SRC=1.2.3.4 PROTO=TCP DPT=80'
+    result = parse_log_line(line)
+    assert result is not None
+    assert result['ip'] == '1.2.3.4'
+    assert result['port'] == 80
+
+
+def test_parse_log_line_requires_src_dpt(app):
+    """parse_log_line возвращает None если нет SRC/DPT, IP невалиден или строка не firewall-событие."""
+    from logparse import parse_log_line
+    assert parse_log_line('Jun  8 kernel: [UFW BLOCK] IN=eth0 DPT=80') is None
+    assert parse_log_line('Jun  8 kernel: [UFW BLOCK] IN=eth0 SRC=1.2.3.4') is None
+    assert parse_log_line('Jun  8 kernel: [UFW BLOCK] IN=eth0 SRC=invalid DPT=80') is None
+    # Строка без UFW/BUTLER-префикса не считается событием брандмауэра.
+    assert parse_log_line('Jun  8 kernel: random SRC=1.2.3.4 DPT=80') is None
 
 
 def test_import_log_text(auth_client, app):
     """Импорт лога через API добавляет записи в таблицу attempts."""
     # Сначала добавим сервис на порт 80
-    auth_client.post('/services', data={'name': 'WEB', 'ports_raw': '80',
-                                        'protocol': 'tcp', 'description': ''},
-                     follow_redirects=True)
+    post(auth_client, '/services', data={'name': 'WEB', 'ports_raw': '80',
+                                         'protocol': 'tcp', 'description': ''},
+         follow_redirects=True)
 
-    r = auth_client.post('/attempts/import-log', data={
+    r = post(auth_client, '/attempts/import-log', data={
         'log_source': 'text',
         'log_text': SAMPLE_LOG,
     }, follow_redirects=True)

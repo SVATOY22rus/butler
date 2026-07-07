@@ -32,3 +32,4 @@ butler-*.tar.gz
 .DS_Store
 Thumbs.db
 *.log
+generated/

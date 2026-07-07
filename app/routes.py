@@ -1,14 +1,16 @@
 import ipaddress
-import re
+import secrets
 import sqlite3
 import subprocess
 from pathlib import Path
 
 import click
-from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
+from flask import (Blueprint, abort, flash, redirect, render_template,
+                   request, session, url_for)
 from .auth import check_auth, login_required
 from .db import get_db, get_setting, set_setting, parse_ports_raw
 from . import firewall as fw
+from logparse import parse_log_line
 
 bp = Blueprint('main', __name__)
 
@@ -20,6 +22,33 @@ def validate_ip_address(value):
         return str(net)
     except ValueError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# CSRF-защита
+# ---------------------------------------------------------------------------
+
+def _get_csrf_token():
+    """Вернуть CSRF-токен сессии, создав его при отсутствии."""
+    token = session.get('csrf_token')
+    if not token:
+        token = secrets.token_hex(16)
+        session['csrf_token'] = token
+    return token
+
+
+@bp.context_processor
+def inject_csrf_token():
+    """Прокинуть csrf_token во все шаблоны."""
+    return {'csrf_token': _get_csrf_token()}
+
+
+def _check_csrf():
+    """Проверить CSRF-токен POST-запроса. При несовпадении — 400."""
+    session_token = session.get('csrf_token')
+    form_token = request.form.get('csrf_token', '')
+    if not session_token or not secrets.compare_digest(str(session_token), str(form_token)):
+        abort(400)
 
 
 # ---------------------------------------------------------------------------
@@ -56,46 +85,6 @@ def firewall_reset_command():
 
 
 # ---------------------------------------------------------------------------
-# Log line parser — supports both nftables and UFW formats
-# ---------------------------------------------------------------------------
-
-def parse_log_line(line):
-    """
-    Parse a single firewall log line from journald / /var/log/kern.log.
-
-    Supported formats:
-      nftables: "... kernel: BUTLER IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ..."
-      UFW:      "... kernel: [UFW BLOCK] IN=eth0 ... SRC=1.2.3.4 ... DPT=8011 ..."
-
-    Returns dict {ip, port, ts} or None if line is not a recognised firewall event.
-    """
-    # Accept nftables BUTLER prefix OR UFW bracket prefix
-    is_nft = bool(re.search(r'kernel:.*BUTLER\b', line))
-    is_ufw = bool(re.search(r'kernel:.*\[UFW\s+(?:BLOCK|ALLOW|LIMIT|AUDIT)\]', line))
-    if not (is_nft or is_ufw):
-        return None
-
-    m_src = re.search(r'SRC=(\S+)', line)
-    m_dpt = re.search(r'DPT=(\d+)', line)
-    m_ts  = re.search(r'^(\w{3}\s+\d+\s+\d+:\d+:\d+)', line)
-    if not (m_src and m_dpt):
-        return None
-
-    ip_raw = m_src.group(1)
-    port   = int(m_dpt.group(1))
-    ts_raw = m_ts.group(1) if m_ts else None
-    try:
-        ip = str(ipaddress.ip_address(ip_raw))
-    except ValueError:
-        return None
-    return {'ip': ip, 'port': port, 'ts_raw': ts_raw}
-
-
-# Backward-compat alias (used by butler-log-import.py if it imports this directly)
-parse_nft_log_line = parse_log_line
-
-
-# ---------------------------------------------------------------------------
 # Routes — dashboard
 # ---------------------------------------------------------------------------
 
@@ -104,14 +93,13 @@ parse_nft_log_line = parse_log_line
 def index():
     db = get_db()
     mode = get_setting('firewall_mode', 'whitelist')
-    backend = current_app.config.get('BUTLER_BACKEND', 'nftables')
     stats = {
         'services': db.execute('SELECT COUNT(*) AS count FROM services').fetchone()['count'],
         'attempts': db.execute('SELECT COUNT(*) AS count FROM attempts').fetchone()['count'],
         'whitelist': db.execute('SELECT COUNT(*) AS count FROM whitelist_entries WHERE enabled = 1').fetchone()['count'],
         'blacklist': db.execute('SELECT COUNT(*) AS count FROM blacklist_entries WHERE enabled = 1').fetchone()['count'],
     }
-    return render_template('index.html', stats=stats, mode=mode, backend=backend)
+    return render_template('index.html', stats=stats, mode=mode)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +112,7 @@ def services():
     db = get_db()
 
     if request.method == 'POST':
+        _check_csrf()
         name        = request.form['name'].strip()
         ports_raw   = request.form['ports_raw'].strip()
         protocol    = request.form['protocol'].strip() or 'tcp'
@@ -181,6 +170,7 @@ def edit_service(service_id):
         return redirect(url_for('main.services'))
 
     if request.method == 'POST':
+        _check_csrf()
         name        = request.form['name'].strip()
         ports_raw   = request.form['ports_raw'].strip()
         protocol    = request.form['protocol'].strip() or 'tcp'
@@ -227,6 +217,7 @@ def edit_service(service_id):
 @bp.route('/services/<int:service_id>/delete', methods=['POST'])
 @login_required
 def delete_service(service_id):
+    _check_csrf()
     db = get_db()
     service = db.execute('SELECT * FROM services WHERE id = ?', (service_id,)).fetchone()
     if service is None:
@@ -250,6 +241,7 @@ def delete_service(service_id):
 @bp.route('/attempts/import-log', methods=['POST'])
 @login_required
 def import_attempts_from_log():
+    _check_csrf()
     db = get_db()
     log_text = ''
     source = request.form.get('log_source', 'text')
@@ -285,7 +277,7 @@ def import_attempts_from_log():
 
     added = 0
     for line in log_text.splitlines():
-        # parse_log_line handles both nftables (BUTLER) and UFW ([UFW BLOCK/...]) formats
+        # parse_log_line распознаёт события UFW ([UFW BLOCK/...]) и legacy BUTLER.
         parsed = parse_log_line(line)
         if parsed is None:
             continue
@@ -318,6 +310,7 @@ def import_attempts_from_log():
 @bp.route('/attempts/<int:attempt_id>/allow', methods=['POST'])
 @login_required
 def allow_attempt(attempt_id):
+    _check_csrf()
     db = get_db()
     row = db.execute('SELECT * FROM attempts WHERE id = ?', (attempt_id,)).fetchone()
     if row is None:
@@ -347,6 +340,7 @@ def allow_attempt(attempt_id):
 @bp.route('/attempts/<int:attempt_id>/block', methods=['POST'])
 @login_required
 def block_attempt(attempt_id):
+    _check_csrf()
     db = get_db()
     row = db.execute('SELECT * FROM attempts WHERE id = ?', (attempt_id,)).fetchone()
     if row is None:
@@ -409,6 +403,7 @@ def whitelist():
     db = get_db()
 
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
         owner_name     = request.form['owner_name'].strip()
         comment        = request.form['comment'].strip()
@@ -458,6 +453,7 @@ def whitelist():
 @bp.route('/whitelist/<int:entry_id>/delete', methods=['POST'])
 @login_required
 def delete_whitelist_entry(entry_id):
+    _check_csrf()
     db = get_db()
     entry = db.execute(
         'SELECT * FROM whitelist_entries WHERE id = ? AND enabled = 1', (entry_id,)
@@ -488,6 +484,7 @@ def edit_whitelist_entry(entry_id):
         return redirect(url_for('main.whitelist'))
 
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
         owner_name     = request.form['owner_name'].strip()
         comment        = request.form['comment'].strip()
@@ -539,6 +536,7 @@ def edit_whitelist_entry(entry_id):
 def blacklist():
     db = get_db()
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
         reason  = request.form['reason'].strip()
         comment = request.form['comment'].strip()
@@ -589,6 +587,7 @@ def blacklist():
 @bp.route('/blacklist/<int:entry_id>/delete', methods=['POST'])
 @login_required
 def delete_blacklist_entry(entry_id):
+    _check_csrf()
     db = get_db()
     entry = db.execute(
         'SELECT * FROM blacklist_entries WHERE id = ? AND enabled = 1', (entry_id,)
@@ -619,6 +618,7 @@ def edit_blacklist_entry(entry_id):
         return redirect(url_for('main.blacklist'))
 
     if request.method == 'POST':
+        _check_csrf()
         ip_address_raw = request.form['ip_address'].strip()
         reason  = request.form['reason'].strip()
         comment = request.form['comment'].strip()
@@ -698,6 +698,7 @@ def _conntrack_drop_port(port, proto='tcp'):
 @bp.route('/conntrack/drop-ips', methods=['POST'])
 @login_required
 def conntrack_drop_ips():
+    _check_csrf()
     db = get_db()
     drop_all = request.form.get('drop_all') == '1'
 
@@ -734,6 +735,7 @@ def conntrack_drop_ips():
 @bp.route('/conntrack/drop-ports', methods=['POST'])
 @login_required
 def conntrack_drop_ports():
+    _check_csrf()
     db = get_db()
     drop_all = request.form.get('drop_all') == '1'
 
@@ -785,6 +787,7 @@ def conntrack_drop_ports():
 @bp.route('/settings/firewall-mode', methods=['POST'])
 @login_required
 def set_firewall_mode():
+    _check_csrf()
     new_mode = request.form.get('mode', 'whitelist')
     if new_mode not in ('whitelist', 'blacklist'):
         flash('Неверный режим.', 'error')
@@ -804,13 +807,13 @@ def set_firewall_mode():
 @login_required
 def firewall():
     rules, mode, skipped = fw.build_rules()
-    backend = current_app.config.get('BUTLER_BACKEND', 'nftables')
-    return render_template('firewall.html', rules=rules, mode=mode, skipped=skipped, backend=backend)
+    return render_template('firewall.html', rules=rules, mode=mode, skipped=skipped)
 
 
 @bp.route('/firewall/export', methods=['POST'])
 @login_required
 def export_firewall():
+    _check_csrf()
     generated_file = fw.write_generated_rules_file()
     flash(f'Файл правил сохранён: {generated_file}', 'success')
     return redirect(url_for('main.firewall'))
@@ -819,6 +822,7 @@ def export_firewall():
 @bp.route('/firewall/apply', methods=['POST'])
 @login_required
 def firewall_apply():
+    _check_csrf()
     confirm = request.form.get('confirm_apply')
     if confirm != 'yes':
         flash('Применение отменено: не подтверждено.', 'error')
@@ -840,6 +844,7 @@ def firewall_apply():
 @bp.route('/firewall/reset', methods=['POST'])
 @login_required
 def firewall_reset():
+    _check_csrf()
     confirm = request.form.get('confirm_reset')
     if confirm != 'yes':
         flash('Сброс отменён: не подтверждён.', 'error')
@@ -873,6 +878,8 @@ def login():
             session.clear()
             session['authenticated'] = True
             session['username'] = username
+            # Регенерируем CSRF-токен после входа (защита от session fixation).
+            session['csrf_token'] = secrets.token_hex(16)
             flash('Вы успешно вошли в систему.', 'success')
             return redirect(url_for('main.index'))
         flash('Неверный логин или пароль.', 'error')
@@ -882,6 +889,7 @@ def login():
 
 @bp.route('/logout', methods=['POST'])
 def logout():
+    _check_csrf()
     session.clear()
     flash('Вы вышли из системы.', 'success')
     return redirect(url_for('main.login'))

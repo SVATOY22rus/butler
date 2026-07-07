@@ -55,15 +55,6 @@ warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die()  { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-# Определяем бэкенд из конфига
-# ---------------------------------------------------------------------------
-BACKEND="nftables"
-if [[ -f "$ENV_FILE" ]]; then
-  _B="$(grep -m1 '^BUTLER_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
-  [[ -n "$_B" ]] && BACKEND="$_B"
-fi
-
-# ---------------------------------------------------------------------------
 # Удаление
 # ---------------------------------------------------------------------------
 if [[ $UNINSTALL -eq 1 ]]; then
@@ -101,23 +92,12 @@ if [[ -z "$BUTLER_PORT" ]]; then
   BUTLER_PORT="${BUTLER_PORT:-5050}"
 fi
 
-# Перечитываем бэкенд после возможного создания файла
-_B2="$(grep -m1 '^BUTLER_BACKEND=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
-[[ -n "$_B2" ]] && BACKEND="$_B2"
-
-# Описание бэкенда для заголовка unit-файла
-case "$BACKEND" in
-  ufw)      BACKEND_DESC="UFW" ;;
-  nftables) BACKEND_DESC="nftables" ;;
-  *)        BACKEND_DESC="$BACKEND" ;;
-esac
-
 echo ""
 echo "Butler — установка"
 echo "  Директория:   $BUTLER_DIR"
 echo "  Пользователь: $BUTLER_USER"
 echo "  Порт:        $BUTLER_PORT"
-echo "  Бэкенд:      $BACKEND"
+echo "  Бэкенд:      UFW"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -188,7 +168,7 @@ echo "Устанавливаю systemd службу..."
 
 sudo tee "$SERVICE_FILE" > /dev/null <<UNIT
 [Unit]
-Description=Butler — управление доступом через ${BACKEND_DESC}
+Description=Butler — управление доступом через UFW
 After=network.target
 
 [Service]
@@ -266,7 +246,7 @@ echo ""
 echo -e "${GREEN}Butler успешно установлен.${NC}"
 echo ""
 echo "  Адрес:    http://$(hostname -I | awk '{print $1}'):${BUTLER_PORT}"
-echo "  Бэкенд:   ${BACKEND}"
+echo "  Бэкенд:   UFW"
 echo "  Конфиг:   ${ENV_FILE}"
 echo "  База:     ${DB_PATH:-см. butler.env}"
 echo ""
@@ -275,11 +255,6 @@ echo "    sudo systemctl status butler"
 echo "    sudo systemctl restart butler"
 echo "    sudo journalctl -u butler -f"
 echo ""
-if [[ "$BACKEND" == "ufw" ]]; then
-  echo "  Бэкенд UFW. Если судоерс ещё не настроен:"
-  echo "    ./sudoers.sh --backend ufw"
-else
-  echo "  Бэкенд nftables. Если судоерс ещё не настроен:"
-  echo "    ./sudoers.sh --backend nftables"
-fi
+echo "  Если sudoers ещё не настроен:"
+echo "    ./sudoers.sh"
 echo ""

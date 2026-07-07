@@ -3,6 +3,8 @@
 """
 import pytest
 
+from conftest import post
+
 
 def test_redirect_to_login_without_session(client):
     """2.1 — без сессии главная страница редиректит на логин."""
@@ -38,7 +40,7 @@ def test_login_wrong_password(client):
 
 def test_logout(auth_client):
     """2.6 — после выхода сессия уничтожена."""
-    r = auth_client.post('/logout', follow_redirects=False)
+    r = post(auth_client, '/logout', follow_redirects=False)
     assert r.status_code in (302, 303)
     # После выхода — защищённая страница недоступна
     r2 = auth_client.get('/services', follow_redirects=False)

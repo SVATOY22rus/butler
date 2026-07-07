@@ -3,13 +3,15 @@
 """
 import pytest
 
+from conftest import post
+
 
 # ──────────────────────────────────────────────
 # Белый список
 # ──────────────────────────────────────────────
 
 def add_whitelist(client, ip, owner='', comment=''):
-    return client.post('/whitelist', data={
+    return post(client, '/whitelist', data={
         'ip_address': ip,
         'owner_name': owner,
         'comment': comment,
@@ -55,7 +57,7 @@ def test_whitelist_delete(auth_client, app):
         assert entry is not None
         entry_id = entry['id']
 
-    r = auth_client.post(f'/whitelist/{entry_id}/delete', follow_redirects=True)
+    r = post(auth_client, f'/whitelist/{entry_id}/delete', follow_redirects=True)
     assert r.status_code == 200
 
     with app.app_context():
@@ -71,7 +73,7 @@ def test_whitelist_delete(auth_client, app):
 # ──────────────────────────────────────────────
 
 def add_blacklist(client, ip, reason='', comment=''):
-    return client.post('/blacklist', data={
+    return post(client, '/blacklist', data={
         'ip_address': ip,
         'reason': reason,
         'comment': comment,

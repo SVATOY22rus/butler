@@ -9,6 +9,7 @@
 
 <div class="card">
     <form method="post" class="data-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>
             IP-адрес
             <input type="text" name="ip_address" value="{{ entry.ip_address }}" required>

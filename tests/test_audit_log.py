@@ -3,6 +3,8 @@
 """
 import pytest
 
+from conftest import post
+
 
 def test_audit_log_page_loads(auth_client):
     """11 — страница журнала открывается."""
@@ -12,7 +14,7 @@ def test_audit_log_page_loads(auth_client):
 
 def test_audit_log_records_service_create(auth_client, app):
     """11.1 — создание сервиса фиксируется в журнале."""
-    auth_client.post('/services', data={
+    post(auth_client, '/services', data={
         'name': 'AUDIT_TEST', 'ports_raw': '1234',
         'protocol': 'tcp', 'description': ''
     }, follow_redirects=True)
@@ -27,7 +29,7 @@ def test_audit_log_records_service_create(auth_client, app):
 
 def test_audit_log_records_whitelist_add(auth_client, app):
     """11.1 — добавление в белый список фиксируется."""
-    auth_client.post('/whitelist', data={
+    post(auth_client, '/whitelist', data={
         'ip_address': '11.22.33.44', 'owner_name': '', 'comment': ''
     }, follow_redirects=True)
 
@@ -41,7 +43,7 @@ def test_audit_log_records_whitelist_add(auth_client, app):
 
 def test_audit_log_records_mode_change(auth_client, app):
     """11.1 — смена режима фиксируется в журнале."""
-    auth_client.post('/settings/firewall-mode', data={'mode': 'blacklist'}, follow_redirects=True)
+    post(auth_client, '/settings/firewall-mode', data={'mode': 'blacklist'}, follow_redirects=True)
 
     with app.app_context():
         from app.db import get_db

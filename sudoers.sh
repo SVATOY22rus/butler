@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# sudoers.sh — настройка sudoers для Butler
+# sudoers.sh — настройка sudoers для Butler (UFW)
 #
-# Разрешает пользователю вызывать команды брандмауэра, conntrack и journalctl
+# Разрешает пользователю вызывать команды UFW, conntrack и journalctl
 # без пароля, в том числе без tty (нужно для вызовов из Python/Flask).
-# Поддерживает два бэкенда: nftables (default) и ufw.
 #
 # Использование:
-#   ./sudoers.sh                          # для текущего пользователя, бэкенд nftables
-#   ./sudoers.sh --backend ufw            # для текущего пользователя, бэкенд ufw
-#   ./sudoers.sh --user myuser            # для конкретного пользователя
-#   ./sudoers.sh --user myuser --backend ufw
-#   ./sudoers.sh --remove                 # удалить правило
+#   ./sudoers.sh                 # для текущего пользователя
+#   ./sudoers.sh --user myuser   # для конкретного пользователя
+#   ./sudoers.sh --remove        # удалить правило
 # =============================================================================
 
 set -euo pipefail
@@ -19,15 +16,13 @@ set -euo pipefail
 BUTLER_USER="$(whoami)"
 SUDOERS_FILE="/etc/sudoers.d/butler"
 REMOVE=0
-BACKEND="nftables"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --user)    BUTLER_USER="$2"; shift 2 ;;
-    --backend) BACKEND="$2";    shift 2 ;;
     --remove)  REMOVE=1;        shift ;;
     -h|--help)
-      echo "Использование: $0 [--user USER] [--backend nftables|ufw] [--remove]"
+      echo "Использование: $0 [--user USER] [--remove]"
       exit 0 ;;
     *) echo "Неизвестный аргумент: $1" >&2; exit 1 ;;
   esac
@@ -50,16 +45,8 @@ fi
 # ---------------------------------------------------------------------------
 # Проверяем наличие команд
 # ---------------------------------------------------------------------------
-REQUIRED_CMDS=(mkdir install test cat journalctl)
+REQUIRED_CMDS=(mkdir install test cat journalctl ufw)
 OPTIONAL_CMDS=(conntrack)
-
-if [[ "$BACKEND" == "nftables" ]]; then
-  REQUIRED_CMDS+=(nft)
-elif [[ "$BACKEND" == "ufw" ]]; then
-  REQUIRED_CMDS+=(ufw)
-else
-  die "Неизвестный бэкенд: $BACKEND. Допустимые значения: nftables, ufw"
-fi
 
 # visudo нужен только для валидации, ищем в PATH
 VISUDO_BIN="$(PATH="$PATH:/usr/sbin" command -v visudo 2>/dev/null || true)"
@@ -88,14 +75,7 @@ TEST_BIN="$(_bin test 2>/dev/null || echo /usr/bin/test)"
 [[ "$TEST_BIN" == /* ]] || TEST_BIN="/usr/bin/test"
 CAT_BIN="$(_bin cat)"
 JOURNALCTL_BIN="$(_bin journalctl)"
-
-# Бэкенд-специфичные команды
-FIREWALL_BIN=""
-if [[ "$BACKEND" == "nftables" ]]; then
-  FIREWALL_BIN="$(_bin nft)"
-elif [[ "$BACKEND" == "ufw" ]]; then
-  FIREWALL_BIN="$(_bin ufw)"
-fi
+UFW_BIN="$(_bin ufw)"
 
 # Conntrack (опционально)
 CONNTRACK_BIN=""
@@ -106,7 +86,7 @@ fi
 # ---------------------------------------------------------------------------
 # Формируем список всех команд для sudoers
 # ---------------------------------------------------------------------------
-ALL_BINS=("$FIREWALL_BIN" "$MKDIR_BIN" "$INSTALL_BIN" "$TEST_BIN" "$CAT_BIN" "$JOURNALCTL_BIN")
+ALL_BINS=("$UFW_BIN" "$MKDIR_BIN" "$INSTALL_BIN" "$TEST_BIN" "$CAT_BIN" "$JOURNALCTL_BIN")
 [[ -n "$CONNTRACK_BIN" ]] && ALL_BINS+=("$CONNTRACK_BIN")
 
 # Строка NOPASSWD для sudoers
@@ -126,7 +106,7 @@ TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
 cat > "$TMP" <<RULES
-# Managed by sudoers.sh (Butler) — backend: ${BACKEND}
+# Managed by sudoers.sh (Butler) — backend: UFW
 # !requiretty needed for passwordless sudo from Python/Flask (no tty)
 ${REQUIRETTY_LINES}
 ${BUTLER_USER} ALL=(root) NOPASSWD: ${NOPASSWD_LIST}
@@ -137,14 +117,9 @@ RULES
 sudo install -m 0440 -o root -g root "$TMP" "$SUDOERS_FILE"
 sudo "$VISUDO_BIN" -cf "$SUDOERS_FILE" > /dev/null
 
-ok "Sudoers настроен для пользователя: ${BUTLER_USER}  (бэкенд: ${BACKEND})"
+ok "Sudoers настроен для пользователя: ${BUTLER_USER}"
 echo "  Файл: $SUDOERS_FILE"
-echo "  Бэкенд: $BACKEND"
-if [[ "$BACKEND" == "nftables" ]]; then
-  echo "  Разрешены: nft, journalctl${CONNTRACK_BIN:+, conntrack}"
-else
-  echo "  Разрешены: ufw, journalctl${CONNTRACK_BIN:+, conntrack}"
-fi
+echo "  Разрешены: ufw, journalctl${CONNTRACK_BIN:+, conntrack}"
 echo ""
-warn "Не забудь установить BUTLER_BACKEND=${BACKEND} в butler.env!"
-warn "ВАЖНО: после \"ufw reset\" файл sudoers удаляется. Butler восстанавливает его автоматически."
+warn "Butler применяет правила UFW идемпотентно, без \"ufw reset\" —"
+warn "sudoers и активные соединения (SSH) не затрагиваются."

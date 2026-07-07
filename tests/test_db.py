@@ -90,32 +90,40 @@ def test_parse_ports_invalid(app):
 
 
 # ──────────────────────────────────────────────
-# _collect_ipv4 — подсети не теряются
+# _collect_ips — подсети и IPv6 не теряются
 # ──────────────────────────────────────────────
 
-def test_collect_ipv4_with_subnet(app):
+def test_collect_ips_with_subnet(app):
     with app.app_context():
-        from app.routes import _collect_ipv4
-
-        class R(dict):
-            def __getitem__(self, k): return super().__getitem__(k)
-
+        from app.firewall import _collect_ips
         rows = [
             {'ip_address': '1.2.3.4'},
             {'ip_address': '10.0.0.0/24'},
             {'ip_address': '188.243.183.0/24'},
         ]
-        v4, skipped = _collect_ipv4(rows)
-        assert '1.2.3.4' in v4
-        assert '10.0.0.0/24' in v4
-        assert '188.243.183.0/24' in v4
+        ips, skipped = _collect_ips(rows)
+        assert '1.2.3.4' in ips
+        assert '10.0.0.0/24' in ips
+        assert '188.243.183.0/24' in ips
         assert skipped == []
 
 
-def test_collect_ipv4_skips_ipv6(app):
+def test_collect_ips_supports_ipv6(app):
+    """UFW-бэкенд поддерживает IPv6 — адреса не отбрасываются."""
     with app.app_context():
-        from app.routes import _collect_ipv4
-        rows = [{'ip_address': '::1'}, {'ip_address': '2001:db8::1'}]
-        v4, skipped = _collect_ipv4(rows)
-        assert v4 == []
-        assert len(skipped) == 2
+        from app.firewall import _collect_ips
+        rows = [{'ip_address': '::1'}, {'ip_address': '2001:db8::/32'}]
+        ips, skipped = _collect_ips(rows)
+        assert '::1' in ips
+        assert '2001:db8::/32' in ips
+        assert skipped == []
+
+
+def test_collect_ips_reports_invalid(app):
+    """Некорректные адреса попадают в skipped, а не в основной список."""
+    with app.app_context():
+        from app.firewall import _collect_ips
+        rows = [{'ip_address': '1.2.3.4'}, {'ip_address': 'garbage'}]
+        ips, skipped = _collect_ips(rows)
+        assert '1.2.3.4' in ips
+        assert 'garbage' in skipped

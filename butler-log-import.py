@@ -13,13 +13,16 @@ Butler — автосбор попыток подключений из journald.
 """
 
 import argparse
-import ipaddress
-import re
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Разбор строк лога вынесен в общий модуль logparse (без зависимости от Flask),
+# чтобы не дублировать парсер между веб-приложением и этим скриптом.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from logparse import parse_log_line
 
 
 DEFAULT_DB    = Path(__file__).parent / 'instance' / 'butler.sqlite3'
@@ -86,24 +89,6 @@ def fetch_journal_lines(cursor: str | None, lines: int) -> tuple[list[str], str 
     return lines_out, new_cursor
 
 
-RE_SRC = re.compile(r'SRC=(\S+)')
-RE_DPT = re.compile(r'DPT=(\d+)')
-
-
-def parse_line(line: str) -> dict | None:
-    m_src = RE_SRC.search(line)
-    m_dpt = RE_DPT.search(line)
-    if not (m_src and m_dpt):
-        return None
-    ip_raw = m_src.group(1)
-    port   = int(m_dpt.group(1))
-    try:
-        ip = str(ipaddress.ip_address(ip_raw))
-    except ValueError:
-        return None
-    return {'ip': ip, 'port': port}
-
-
 def run(db_path: str, state_path: Path, max_lines: int):
     cursor = read_cursor(state_path)
 
@@ -141,7 +126,7 @@ def run(db_path: str, state_path: Path, max_lines: int):
     added = updated = skipped = 0
 
     for line in log_lines:
-        parsed = parse_line(line)
+        parsed = parse_log_line(line)
         if parsed is None:
             continue
 

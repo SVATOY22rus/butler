@@ -3,9 +3,11 @@
 """
 import pytest
 
+from conftest import post
+
 
 def add_service(client, name, ports_raw, protocol='tcp', description=''):
-    return client.post('/services', data={
+    return post(client, '/services', data={
         'name': name,
         'ports_raw': ports_raw,
         'protocol': protocol,
@@ -50,7 +52,7 @@ def test_delete_service(auth_client, app):
         assert service is not None
         service_id = service['id']
 
-    r = auth_client.post(f'/services/{service_id}/delete', follow_redirects=True)
+    r = post(auth_client, f'/services/{service_id}/delete', follow_redirects=True)
     assert r.status_code == 200
 
     with app.app_context():
