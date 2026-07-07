@@ -9,8 +9,17 @@ import pytest
 def app(tmp_path):
     db_path = str(tmp_path / 'test.sqlite3')
 
-    # Конфигурация через env-переменные (как в реальном деплое)
-    os.environ['BUTLER_ENV_FILE']   = ''
+    # ВАЖНО: изоляция от реального butler.env.
+    # create_app() ищет butler.env в cwd/родителе и грузит его с override=True —
+    # это перетирает тестовые креды и BUTLER_DATABASE реальными значениями
+    # (логин ломается => везде 302, тесты бьют по боевой БД).
+    # _find_env_file() принимает BUTLER_ENV_FILE только если это существующий
+    # файл, иначе идёт искать butler.env в cwd/parent. Поэтому недостаточно
+    # указать несуществующий путь — создаём РЕАЛЬНЫЙ пустой env-файл в tmp_path,
+    # чтобы is_file() вернул True и поиск не дошёл до реального butler.env.
+    empty_env = tmp_path / 'test.env'
+    empty_env.write_text('')
+    os.environ['BUTLER_ENV_FILE']   = str(empty_env)
     os.environ['BUTLER_SECRET_KEY'] = 'test-secret-key'
     os.environ['BUTLER_DATABASE']   = db_path
     os.environ['BUTLER_ADMIN_USER'] = 'admin'
