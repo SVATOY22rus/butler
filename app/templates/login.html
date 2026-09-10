@@ -8,6 +8,7 @@
         <p>Введите логин и пароль администратора.</p>
 
         <form method="post" class="data-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label>
                 Логин
                 <input id="username" name="username" type="text" required autofocus>

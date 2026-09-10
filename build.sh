@@ -45,7 +45,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 OUTPUT_NAME="butler-${TIMESTAMP}.tar.gz"
 OUTPUT_DIR="$(dirname "$SCRIPT_DIR")"
-PLATFORM="linux_x86_64"
+# manylinux2014 = glibc 2.17+; тега "linux_x86_64" у бинарных wheel'ов на PyPI не бывает
+PLATFORM="manylinux2014_x86_64"
 SKIP_WHEELS=0
 
 # Автоопределение Python
@@ -118,26 +119,34 @@ if [[ $SKIP_WHEELS -eq 0 ]]; then
   echo "Скачиваю wheels..."
   rm -rf "$WHEELS_DIR" && mkdir -p "$WHEELS_DIR"
 
-  if "$PYTHON_BIN" -m pip download \
+  # Без --quiet: нужно видеть, какие именно файлы скачиваются.
+  # Фоллбека на sdist больше нет: он терял --platform/--abi и молча клал в
+  # архив wheel под ABI сборочной машины, а падало уже на сервере.
+  if ! "$PYTHON_BIN" -m pip download \
       --dest "$WHEELS_DIR" \
       --platform "$PLATFORM" \
       --python-version "$PYTHON_VERSION" \
       --implementation cp \
       --abi "$ABI" \
       --only-binary=:all: \
-      -r "${SCRIPT_DIR}/requirements.txt" \
-      --quiet 2>&1; then
-    ok "Wheels скачаны: $(ls "$WHEELS_DIR" | wc -l) файлов."
-  else
-    warn "Не все бинарные wheels найдены — пробую с sdist..."
-    rm -rf "$WHEELS_DIR" && mkdir -p "$WHEELS_DIR"
-    "$PYTHON_BIN" -m pip download \
-      --dest "$WHEELS_DIR" \
-      -r "${SCRIPT_DIR}/requirements.txt" \
-      --quiet
-    warn "Часть пакетов — sdist. На сервере нужен компилятор (gcc, python3-dev)."
-    ok "Wheels скачаны: $(ls "$WHEELS_DIR" | wc -l) файлов."
+      -r "${SCRIPT_DIR}/requirements.txt"; then
+    die "Не удалось скачать wheels под ${ABI} / ${PLATFORM}.
+    Проверь доступные теги: pip index versions MarkupSafe"
   fi
+
+  # Страховка: в архив не должны попасть wheel'ы чужого ABI
+  BAD_ABI="$(ls "$WHEELS_DIR" | grep -P 'cp\d+' | grep -v "$ABI" || true)"
+  if [[ -n "$BAD_ABI" ]]; then
+    die "В wheels/ попали пакеты чужого ABI (ожидался ${ABI}):"$'\n'"$BAD_ABI"
+  fi
+
+  # Страховка: sdist (.tar.gz) требует компилятора на сервере
+  SDIST="$(ls "$WHEELS_DIR" | grep -E '\.(tar\.gz|zip)$' || true)"
+  if [[ -n "$SDIST" ]]; then
+    warn "В wheels/ есть sdist — на сервере потребуется gcc и python3-dev:"$'\n'"$SDIST"
+  fi
+
+  ok "Wheels скачаны: $(ls "$WHEELS_DIR" | wc -l) файлов (ABI ${ABI})."
 else
   warn "--no-wheels: пропускаю скачивание."
 fi
@@ -178,6 +187,7 @@ find "${INNER_DIR}/app" -name "*.pyc" -delete 2>/dev/null || true
 # ---------------------------------------------------------------------------
 # Шаг 3 — упаковка
 # ---------------------------------------------------------------------------
+mkdir -p "$(dirname "$OUTPUT_PATH")"
 tar -czf "$OUTPUT_PATH" -C "$BUILD_TMP" butler
 
 ARCHIVE_SIZE="$(du -sh "$OUTPUT_PATH" | cut -f1)"

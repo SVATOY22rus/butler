@@ -9,6 +9,7 @@
 
 <div class="card">
     <form method="post" class="data-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>
             Имя сервиса
             <input type="text" name="name" value="{{ service.name }}" required>

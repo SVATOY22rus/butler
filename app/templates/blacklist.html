@@ -6,6 +6,7 @@
     <h2>Добавить в чёрный список</h2>
     <p>Адреса из этого списка будут заблокированы в режиме «чёрный список».</p>
     <form method="post" class="form-grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>
             IP-адрес
             <input type="text" name="ip_address" placeholder="5.6.7.8 или 10.0.0.0/24" required>
@@ -35,6 +36,7 @@
 
     {# Форма только для conntrack drop по IP #}
     <form method="post" action="{{ url_for('main.conntrack_drop_ips') }}" id="bl-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="table-wrap">
             <table>
                 <thead>
@@ -90,6 +92,7 @@
       method="post"
       action="{{ url_for('main.delete_blacklist_entry', entry_id=item.id) }}"
       style="display:none;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 </form>
 {% endfor %}
 

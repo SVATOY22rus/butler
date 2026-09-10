@@ -6,6 +6,7 @@
     <h2>Добавить сервис</h2>
     <p>Укажите имя и порты. Несколько портов — через запятую или диапазон через дефис.</p>
     <form method="post" class="form-grid">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <label>
             Имя сервиса
             <input type="text" name="name" placeholder="Например CRM" required>
@@ -43,6 +44,7 @@
 
     {# Основная форма — только для сброса conntrack по портам #}
     <form method="post" action="{{ url_for('main.conntrack_drop_ports') }}" id="ports-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="table-wrap">
             <table>
                 <thead>
@@ -110,6 +112,7 @@
       method="post"
       action="{{ url_for('main.delete_service', service_id=item.id) }}"
       style="display:none;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 </form>
 {% endfor %}
 

@@ -2,8 +2,39 @@
 Общие фикстуры pytest для Butler.
 """
 import os
+import secrets
 import tempfile
+
 import pytest
+from flask.testing import FlaskClient
+
+
+class CSRFClient(FlaskClient):
+    """
+    Тестовый клиент, который автоматически подкладывает csrf_token в POST-данные.
+
+    Токен берётся из настоящей сессии, поэтому проверка _check_csrf() остаётся
+    реальной, а не отключённой. Чтобы отправить запрос без токена (для
+    негативных тестов), передай no_csrf=True.
+    """
+
+    def post(self, *args, **kwargs):
+        skip = kwargs.pop('no_csrf', False)
+        data = kwargs.get('data')
+        # Формы без полей (например, кнопки удаления) приходят с data=None —
+        # им токен тоже нужен, иначе _check_csrf() отклонит запрос.
+        if data is None and 'json' not in kwargs:
+            data = {}
+        if not skip and isinstance(data, dict) and 'csrf_token' not in data:
+            with self.session_transaction() as sess:
+                token = sess.get('csrf_token')
+                if not token:
+                    token = secrets.token_hex(32)
+                    sess['csrf_token'] = token
+            data = dict(data)
+            data['csrf_token'] = token
+            kwargs['data'] = data
+        return super().post(*args, **kwargs)
 
 
 @pytest.fixture
@@ -22,6 +53,7 @@ def app(tmp_path):
     from app import create_app
     application = create_app()
     application.config['TESTING'] = True
+    application.test_client_class = CSRFClient
 
     with application.app_context():
         from app.db import init_db
