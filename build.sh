@@ -27,9 +27,9 @@
 #       └── env.example
 #
 # Деплой на сервер:
-#   scp butler-*.tar.gz user@server:~/serv/
+#   scp butler-*.tar.gz user@server:~/
 #   ssh user@server
-#   cd ~/serv && tar -xzf butler-*.tar.gz
+#   tar -xzf butler-*.tar.gz
 #   cd butler
 #   nano butler.env          # поправить пароль
 #   ./install.sh
@@ -167,6 +167,13 @@ install -m 755 "${SCRIPT_DIR}/install.sh"  "${DIST_DIR}/install.sh"
 install -m 755 "${SCRIPT_DIR}/sudoers.sh"  "${DIST_DIR}/sudoers.sh"
 install -m 755 "${SCRIPT_DIR}/butler"      "${DIST_DIR}/butler"
 install -m 644 "${SCRIPT_DIR}/env.example" "${DIST_DIR}/butler.env.example"
+# Инструкции кладём рядом, чтобы архив был самодостаточным:
+# тестировщику может достаться только tar.gz, без доступа к репозиторию.
+for _doc in README.md TESTING.md; do
+  if [[ -f "${SCRIPT_DIR}/${_doc}" ]]; then
+    install -m 644 "${SCRIPT_DIR}/${_doc}" "${DIST_DIR}/${_doc}"
+  fi
+done
 
 # Всё остальное — в .butler/
 cp -r "${SCRIPT_DIR}/app"                              "${INNER_DIR}/app"
@@ -233,10 +240,10 @@ if [[ $ALL_OK -eq 1 ]]; then
   ok "Готово к деплою."
   echo ""
   echo "  Перенести на сервер:"
-  echo "    scp ${OUTPUT_PATH} user@server:~/serv/"
+  echo "    scp ${OUTPUT_PATH} user@server:~/"
   echo ""
   echo "  На сервере:"
-  echo "    cd ~/serv && tar -xzf ${OUTPUT_NAME}"
+  echo "    tar -xzf ${OUTPUT_NAME}"
   echo "    cd butler"
   echo "    cp butler.env.example butler.env && nano butler.env"
   echo "    ./install.sh"
