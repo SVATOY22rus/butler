@@ -13,7 +13,9 @@
 
 set -euo pipefail
 
-BUTLER_USER="$(whoami)"
+# Скрипт запускают через sudo, и тогда whoami == root — правило уходило root'у,
+# а реальный пользователь оставался без прав.
+BUTLER_USER="${SUDO_USER:-$(id -un)}"
 SUDOERS_FILE="/etc/sudoers.d/butler"
 REMOVE=0
 

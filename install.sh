@@ -140,12 +140,28 @@ echo ""
 echo "Создаю виртуальное окружение..."
 
 PYTHON_BIN=""
-for PY in python3.13 python3.12 python3.11 python3.10 python3; do
-  if command -v "$PY" &>/dev/null; then
-    PYTHON_BIN="$(command -v "$PY")"
-    break
+# В wheels/ есть пакеты с C-расширением (MarkupSafe) — они жёстко привязаны к ABI.
+# Брать "самый новый python" нельзя: нужен тот, под который собран архив.
+WHEEL_ABI="$(ls "$WHEELS_DIR" 2>/dev/null | grep -oP 'cp\K\d+' | sort -u | head -1 || true)"
+
+if [[ -n "$WHEEL_ABI" ]]; then
+  WANT_PY="python${WHEEL_ABI:0:1}.${WHEEL_ABI:1}"
+  if command -v "$WANT_PY" &>/dev/null; then
+    PYTHON_BIN="$(command -v "$WANT_PY")"
+  else
+    die "Wheels собраны под cp${WHEEL_ABI} (${WANT_PY}), но такого Python в системе нет.
+    В системе: $(python3 -V 2>&1 || echo 'нет')
+    Пересобери дистрибутив под нужную версию, например:
+      ./build.sh --python-version 3.11 --abi cp311 --platform manylinux2014_x86_64"
   fi
-done
+else
+  for PY in python3.13 python3.12 python3.11 python3.10 python3; do
+    if command -v "$PY" &>/dev/null; then
+      PYTHON_BIN="$(command -v "$PY")"
+      break
+    fi
+  done
+fi
 [[ -n "$PYTHON_BIN" ]] || die "Python3 не найден.\n  Установи: sudo apt install python3"
 
 "$PYTHON_BIN" -m venv "$VENV_DIR"
@@ -156,11 +172,17 @@ ok "venv создан: $VENV_DIR"
 # ---------------------------------------------------------------------------
 echo "Устанавливаю зависимости из wheels..."
 
+# Если pip упадёт — не оставляем полусобранный venv.
+cleanup_venv() { rm -rf "$VENV_DIR"; }
+trap cleanup_venv ERR
+
 "${VENV_DIR}/bin/pip" install \
   --no-index \
   --find-links "$WHEELS_DIR" \
   --quiet \
   -r "${INNER_DIR}/requirements.txt"
+
+trap - ERR
 
 ok "Зависимости установлены."
 
