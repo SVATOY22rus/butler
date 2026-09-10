@@ -13,7 +13,9 @@
 
 set -euo pipefail
 
-BUTLER_USER="$(whoami)"
+# ВАЖНО: скрипт обычно запускают через sudo, и тогда whoami == root — правило
+# уходило root'у, а реальный пользователь так и оставался без прав.
+BUTLER_USER="${SUDO_USER:-$(id -un)}"
 SUDOERS_FILE="/etc/sudoers.d/butler"
 REMOVE=0
 
@@ -28,8 +30,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
-ok()  { echo -e "${GREEN}[✓]${NC} $*"; }
+# Системные бинарники (visudo, nft, conntrack) живут в /usr/sbin и /sbin,
+# которых нет в PATH непривилегированного пользователя на Debian/Astra.
+PATH="${PATH}:/usr/local/sbin:/usr/sbin:/sbin"
+
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 die() { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -48,13 +55,26 @@ fi
 REQUIRED_CMDS=(visudo mkdir install test cat nft journalctl)
 OPTIONAL_CMDS=(conntrack)
 
+# Имя команды != имя пакета. "apt install visudo" не существует.
+pkg_for() {
+  case "$1" in
+    visudo)     echo sudo ;;
+    nft)        echo nftables ;;
+    conntrack)  echo conntrack ;;
+    journalctl) echo systemd ;;
+    *)          echo coreutils ;;
+  esac
+}
+
 for cmd in "${REQUIRED_CMDS[@]}"; do
-  command -v "$cmd" > /dev/null || die "Команда не найдена: $cmd — установи пакет (apt install $cmd)"
+  command -v "$cmd" > /dev/null \
+    || die "Команда не найдена: ${cmd} — установи: sudo apt install $(pkg_for "$cmd")"
 done
 
 for cmd in "${OPTIONAL_CMDS[@]}"; do
   if ! command -v "$cmd" > /dev/null 2>&1; then
-    echo "  [!] Команда '$cmd' не найдена. Установи: sudo apt install conntrack"
+    warn "Команда '${cmd}' не найдена. Установи: sudo apt install $(pkg_for "$cmd")"
+    echo "      Без неё Butler не сможет сбрасывать активные соединения."
     echo "      После установки перезапусти этот скрипт."
   fi
 done
@@ -81,6 +101,12 @@ fi
 # ---------------------------------------------------------------------------
 # Пишем файл
 # ---------------------------------------------------------------------------
+if [[ "$BUTLER_USER" == "root" ]]; then
+  die "Правило нельзя выписывать на root — Butler работает не от root.
+    Укажи пользователя явно: sudo $0 --user ИМЯ"
+fi
+id "$BUTLER_USER" &>/dev/null || die "Пользователь '${BUTLER_USER}' не существует."
+
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
@@ -94,6 +120,15 @@ RULES
 
 sudo install -m 0440 "$TMP" "$SUDOERS_FILE"
 sudo "$VISUDO_BIN" -cf "$SUDOERS_FILE" > /dev/null
+
+# Проверяем, что правило реально применилось к нужному пользователю,
+# а не просто записалось в файл.
+if sudo -l -U "$BUTLER_USER" 2>/dev/null | grep -q "NOPASSWD.*${NFT_BIN}"; then
+  ok "Проверено: ${BUTLER_USER} может вызывать nft без пароля."
+else
+  warn "Файл записан, но sudo не подтверждает права для ${BUTLER_USER}."
+  echo "      Проверь вручную: sudo -l -U ${BUTLER_USER}"
+fi
 
 ok "Sudoers настроен для пользователя: $BUTLER_USER"
 echo "  Файл: $SUDOERS_FILE"
